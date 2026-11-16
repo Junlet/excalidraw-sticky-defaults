@@ -50,8 +50,11 @@ export default class StickyDefaultsPlugin extends Plugin {
 
 		// The reader is a closure over live settings, so changing a dropdown takes
 		// effect on the next tick without restarting the poller.
-		this.fixer = new StickyNoteFixer(this.app, () =>
-			this.settings.enabled ? toStickyDefaults(this.settings) : NO_DEFAULTS
+		this.fixer = new StickyNoteFixer(
+			this.app,
+			() =>
+				this.settings.enabled ? toStickyDefaults(this.settings) : NO_DEFAULTS,
+			() => this.settings.debugLog
 		);
 
 		this.addSettingTab(new StickyDefaultsSettingTab(this.app, this));

@@ -99,6 +99,11 @@ function labelPatch(label, defaults) {
 
 // src/apply.ts
 var TICK_MS = 300;
+var FIRST_WAIT_MS = 350;
+var RETRY_GAP_MS = 600;
+var MAX_ATTEMPTS = 6;
+var PENDING_TTL_MS = 2e4;
+var VERIFY_MS = 1500;
 var EXCALIDRAW_PLUGIN_ID = "obsidian-excalidraw-plugin";
 function editingIds(state) {
   const editing = state == null ? void 0 : state.editingTextElement;
@@ -109,19 +114,25 @@ function editingIds(state) {
 var StickyNoteFixer = class {
   /**
    * @param app - The Obsidian app.
-   * @param readDefaults - Current settings, read live so a slider takes effect
-   *   without restarting the poller.
+   * @param readDefaults - Current settings, read live so a dropdown takes
+   *   effect without restarting the poller.
+   * @param readDebug - Whether to log each fix to the console.
    */
-  constructor(app, readDefaults) {
+  constructor(app, readDefaults, readDebug = () => false) {
     this.app = app;
     this.readDefaults = readDefaults;
+    this.readDebug = readDebug;
     this.states = /* @__PURE__ */ new WeakMap();
     /** Warned once when ExcalidrawAutomate could not be reached. */
     this.warned = false;
   }
   /**
-   * One poll: check every open drawing for sticky notes created since the last
-   * look and align their labels.
+   * One poll: look for sticky notes that do not match the defaults yet.
+   *
+   * Runs on every tick rather than only on scene changes, because a patch that
+   * the text editor then overwrote leaves the scene version settled at a value
+   * that no longer changes -- waiting for another change would never retry it.
+   * The version check is kept only as a cheap idle short-circuit.
    */
   tick() {
     const defaults = this.readDefaults();
@@ -132,27 +143,32 @@ var StickyNoteFixer = class {
       const elements = api.getSceneElements();
       if (!Array.isArray(elements)) continue;
       const version = this.sceneVersion(view, elements);
-      const existing = this.states.get(view);
-      if (!existing) {
-        const seen = /* @__PURE__ */ new Set();
-        for (const element of elements) {
-          if (isStickyNote(element) && typeof element.id === "string") {
-            seen.add(element.id);
-          }
-        }
-        this.states.set(view, { version, seen });
+      let state = this.states.get(view);
+      if (!state) {
+        state = {
+          version,
+          seen: this.noteIds(elements),
+          pending: /* @__PURE__ */ new Map()
+        };
+        this.states.set(view, state);
         continue;
       }
-      if (version === existing.version) continue;
-      existing.version = version;
-      void this.reconcile(view, elements, existing, defaults, false);
+      if (version === state.version && state.pending.size === 0) continue;
+      state.version = version;
+      void this.reconcile(
+        view,
+        elements,
+        state,
+        defaults,
+        false
+      );
     }
   }
   /**
    * Applies the defaults to every sticky note in every open drawing.
    *
    * Used by the command of the same name: unlike {@link tick} this ignores the
-   * "new only" rule, but still leaves a note alone while its editor is open.
+   * "new only" rule, but still leaves a note alone while a text editor is open.
    *
    * @returns How many labels were rewritten.
    */
@@ -166,7 +182,8 @@ var StickyNoteFixer = class {
       if (!Array.isArray(elements)) continue;
       const state = (_c = this.states.get(view)) != null ? _c : {
         version: -1,
-        seen: /* @__PURE__ */ new Set()
+        seen: /* @__PURE__ */ new Set(),
+        pending: /* @__PURE__ */ new Map()
       };
       this.states.set(view, state);
       changed += await this.reconcile(
@@ -188,6 +205,16 @@ var StickyNoteFixer = class {
     }
     return views;
   }
+  /** Ids of every sticky note in a scene. */
+  noteIds(elements) {
+    const ids = /* @__PURE__ */ new Set();
+    for (const element of elements) {
+      if (isStickyNote(element) && typeof element.id === "string") {
+        ids.add(element.id);
+      }
+    }
+    return ids;
+  }
   /** A cheap change detector for one drawing. */
   sceneVersion(view, elements) {
     if (typeof view.getSceneVersion === "function") {
@@ -198,6 +225,11 @@ var StickyNoteFixer = class {
     }
     return elements.length;
   }
+  /** Retires a note: it matches the defaults, or we have stopped trying. */
+  retire(state, noteId) {
+    state.seen.add(noteId);
+    state.pending.delete(noteId);
+  }
   /**
    * Rewrites the labels that need it.
    *
@@ -205,33 +237,101 @@ var StickyNoteFixer = class {
    * @param elements - Its scene.
    * @param state - Per-drawing bookkeeping.
    * @param defaults - What to force.
-   * @param force - Handle notes already recorded as seen.
+   * @param force - Ignore the "already seen" list and the retry delays.
    * @returns How many labels were rewritten.
    */
   async reconcile(view, elements, state, defaults, force) {
+    const now = Date.now();
     const patches = [];
+    let gaveUp = 0;
     for (const note of elements) {
       if (!isStickyNote(note) || typeof note.id !== "string") continue;
       if (!force && state.seen.has(note.id)) continue;
       const label = boundLabelOf(note, elements);
       if (!label || typeof label.id !== "string") {
-        state.seen.add(note.id);
+        this.retire(state, note.id);
         continue;
       }
-      if (this.isEditing(view, label)) continue;
       const patch = labelPatch(label, defaults);
-      state.seen.add(note.id);
-      if (patch) patches.push({ labelId: label.id, patch });
+      if (!patch) {
+        const pending = state.pending.get(note.id);
+        if (pending && pending.verifyUntil > now) continue;
+        this.retire(state, note.id);
+        continue;
+      }
+      if (!force) {
+        const pending = state.pending.get(note.id);
+        if (!pending) {
+          state.pending.set(note.id, {
+            deadline: now + PENDING_TTL_MS,
+            attempts: 0,
+            nextTry: now + FIRST_WAIT_MS,
+            verifyUntil: 0
+          });
+          continue;
+        }
+        if (now < pending.nextTry) continue;
+        if (now > pending.deadline || pending.attempts >= MAX_ATTEMPTS) {
+          this.retire(state, note.id);
+          gaveUp += 1;
+          continue;
+        }
+        if (this.isEditing(view, label)) {
+          pending.nextTry = now + RETRY_GAP_MS / 2;
+          continue;
+        }
+        pending.attempts += 1;
+        pending.nextTry = now + RETRY_GAP_MS;
+      }
+      patches.push({ noteId: note.id, labelId: label.id, patch });
+    }
+    if (gaveUp > 0) {
+      console.warn(
+        `[excalidraw-sticky-defaults] 有 ${gaveUp} 个便签在 ${MAX_ATTEMPTS} 次尝试后仍未改成默认样式，已跳过。`
+      );
     }
     if (patches.length === 0) return 0;
-    return await this.write(view, elements, patches) ? patches.length : 0;
+    const ok = await this.write(
+      view,
+      elements,
+      patches.map((entry) => ({ labelId: entry.labelId, patch: entry.patch }))
+    );
+    if (!ok) return 0;
+    for (const entry of patches) {
+      const pending = state.pending.get(entry.noteId);
+      if (pending) pending.verifyUntil = Date.now() + VERIFY_MS;
+    }
+    if (this.readDebug()) {
+      for (const entry of patches) {
+        console.log(
+          "[excalidraw-sticky-defaults] 已改写便签",
+          entry.noteId,
+          entry.patch
+        );
+      }
+    }
+    return patches.length;
   }
-  /** Whether this label's text editor is open right now. */
+  /**
+   * Whether a text editor is open, so writing would fight the user.
+   *
+   * Three signals, cheapest first. The `textarea` check is blunt -- it reacts to
+   * *any* open text editor in the view, not just this note's -- but it is the
+   * one that does not depend on an internal appState key, and a false positive
+   * only delays the fix by a tick.
+   *
+   * @param view - The drawing.
+   * @param label - The label about to be written.
+   */
   isEditing(view, label) {
-    var _a, _b;
+    var _a, _b, _c, _d;
+    try {
+      if ((_b = (_a = view.containerEl) == null ? void 0 : _a.querySelector) == null ? void 0 : _b.call(_a, "textarea")) return true;
+    } catch (e) {
+    }
     let state;
     try {
-      state = (_b = (_a = view.excalidrawAPI) == null ? void 0 : _a.getAppState) == null ? void 0 : _b.call(_a);
+      state = (_d = (_c = view.excalidrawAPI) == null ? void 0 : _c.getAppState) == null ? void 0 : _d.call(_c);
     } catch (e) {
       return false;
     }
@@ -242,8 +342,8 @@ var StickyNoteFixer = class {
   /**
    * Commits the patches through ExcalidrawAutomate.
    *
-   * The same route the Excalidraw plugin uses for its own element edits:
-   * copy the scene elements onto a workbench, mutate the copies, then let
+   * The same route the Excalidraw plugin uses for its own element edits: copy
+   * the scene elements onto a workbench, mutate the copies, then let
    * `addElementsToView()` merge them back with proper version bumps and
    * redrawing. `"NEVER"` is passed as the capture action so an automatic,
    * cosmetic fix does not land on the undo stack.
@@ -284,10 +384,7 @@ var StickyNoteFixer = class {
       }
       return await ea.addElementsToView(false, true, false, false, "NEVER");
     } catch (error) {
-      console.error(
-        "[excalidraw-sticky-defaults] 写入便签label失败",
-        error
-      );
+      console.error("[excalidraw-sticky-defaults] 写入便签label失败", error);
       return false;
     } finally {
       (_a = ea.destroy) == null ? void 0 : _a.call(ea);
@@ -320,7 +417,8 @@ var DEFAULT_SETTINGS = {
   fontFamily: 3,
   fontSize: 0,
   textAlign: "left",
-  verticalAlign: "top"
+  verticalAlign: "top",
+  debugLog: false
 };
 function normalizeSettings(stored) {
   const raw = stored && typeof stored === "object" ? stored : {};
@@ -331,7 +429,8 @@ function normalizeSettings(stored) {
     fontFamily,
     fontSize,
     textAlign: isAlignSetting(raw.textAlign) ? raw.textAlign : DEFAULT_SETTINGS.textAlign,
-    verticalAlign: isVerticalAlignSetting(raw.verticalAlign) ? raw.verticalAlign : DEFAULT_SETTINGS.verticalAlign
+    verticalAlign: isVerticalAlignSetting(raw.verticalAlign) ? raw.verticalAlign : DEFAULT_SETTINGS.verticalAlign,
+    debugLog: typeof raw.debugLog === "boolean" ? raw.debugLog : DEFAULT_SETTINGS.debugLog
   };
 }
 function toStickyDefaults(settings) {
@@ -434,6 +533,14 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.applyToOpenDrawings(true);
       })
     );
+    new import_obsidian.Setting(containerEl).setName("调试日志").setDesc(
+      "打开后每次改写便签都会在控制台打一行日志（含便签 id 和改了哪些字段）。排查「新便签没生效」时有用。"
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.debugLog).onChange(async (value) => {
+        this.plugin.settings.debugLog = value;
+        await this.plugin.saveSettings();
+      })
+    );
   }
 };
 
@@ -455,7 +562,8 @@ var StickyDefaultsPlugin = class extends import_obsidian2.Plugin {
     await this.loadSettings();
     this.fixer = new StickyNoteFixer(
       this.app,
-      () => this.settings.enabled ? toStickyDefaults(this.settings) : NO_DEFAULTS
+      () => this.settings.enabled ? toStickyDefaults(this.settings) : NO_DEFAULTS,
+      () => this.settings.debugLog
     );
     this.addSettingTab(new StickyDefaultsSettingTab(this.app, this));
     this.registerInterval(

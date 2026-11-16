@@ -36,6 +36,8 @@ export interface StickyDefaultsSettings {
 	textAlign: AlignSetting;
 	/** Vertical alignment to force, or `"keep"`. */
 	verticalAlign: VAlignSetting;
+	/** Log every rewrite to the console. Off unless asked for. */
+	debugLog: boolean;
 }
 
 /**
@@ -50,6 +52,7 @@ export const DEFAULT_SETTINGS: StickyDefaultsSettings = {
 	fontSize: 0,
 	textAlign: "left",
 	verticalAlign: "top",
+	debugLog: false,
 };
 
 /**
@@ -88,6 +91,10 @@ export function normalizeSettings(stored: unknown): StickyDefaultsSettings {
 		verticalAlign: isVerticalAlignSetting(raw.verticalAlign)
 			? raw.verticalAlign
 			: DEFAULT_SETTINGS.verticalAlign,
+		debugLog:
+			typeof raw.debugLog === "boolean"
+				? raw.debugLog
+				: DEFAULT_SETTINGS.debugLog,
 	};
 }
 
@@ -263,6 +270,21 @@ export class StickyDefaultsSettingTab extends PluginSettingTab {
 					.setButtonText("套用")
 					.onClick(async () => {
 						await this.plugin.applyToOpenDrawings(true);
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("调试日志")
+			.setDesc(
+				"打开后每次改写便签都会在控制台打一行日志（含便签 id 和改了哪些字段）。" +
+					"排查「新便签没生效」时有用。"
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.debugLog)
+					.onChange(async (value) => {
+						this.plugin.settings.debugLog = value;
+						await this.plugin.saveSettings();
 					})
 			);
 	}

@@ -1,6 +1,6 @@
 {
   "name": "excalidraw-sticky-defaults",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Applies a default font and left alignment to newly created Excalidraw sticky notes.",
   "main": "main.js",
   "scripts": {
