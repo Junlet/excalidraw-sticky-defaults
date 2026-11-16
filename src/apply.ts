@@ -277,8 +277,14 @@ export class StickyNoteFixer {
 				if (entry.patch.fontFamily !== undefined) {
 					target.fontFamily = entry.patch.fontFamily;
 				}
+				if (entry.patch.fontSize !== undefined) {
+					target.fontSize = entry.patch.fontSize;
+				}
 				if (entry.patch.textAlign !== undefined) {
 					target.textAlign = entry.patch.textAlign;
+				}
+				if (entry.patch.verticalAlign !== undefined) {
+					target.verticalAlign = entry.patch.verticalAlign;
 				}
 			}
 			return await ea.addElementsToView(false, true, false, false, "NEVER");

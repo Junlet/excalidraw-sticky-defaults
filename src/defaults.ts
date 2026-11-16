@@ -29,6 +29,35 @@ export const TEXT_ALIGNMENTS: readonly TextAlign[] = ["left", "center", "right"]
 export type AlignSetting = TextAlign | "keep";
 
 /**
+ * Vertical alignment of text inside a container.
+ *
+ * Excalidraw's own ExcalidrawAutomate typedef annotates `style.verticalAlign`
+ * as "For future use, has no effect currently", so writing this field is not a
+ * guarantee that the renderer honours it -- it is stored on the element and the
+ * plugin writes it, which is the most any plugin can do here.
+ */
+export type VerticalAlign = "top" | "middle" | "bottom";
+
+/** Every vertical alignment, in menu order. */
+export const VERTICAL_ALIGNMENTS: readonly VerticalAlign[] = [
+	"top",
+	"middle",
+	"bottom",
+];
+
+/** `"keep"` means "do not touch the vertical alignment". */
+export type VAlignSetting = VerticalAlign | "keep";
+
+/**
+ * Font sizes Excalidraw itself offers (S / M / L / XL), plus this plugin's `0`
+ * = "leave it alone".
+ *
+ * For a sticky note this value is a **ceiling**, not a fixed size: Excalidraw
+ * shrinks the font until the text fits and only then grows the note.
+ */
+export const FONT_SIZES: readonly number[] = [16, 20, 28, 36];
+
+/**
  * Excalidraw's built-in fonts, with the ids Excalidraw itself uses.
  *
  * `0` is this plugin's "leave the font alone" value and is not an Excalidraw id.
@@ -50,13 +79,22 @@ export const FONT_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
 export interface StickyDefaults {
 	/** Excalidraw font id, or `null` to leave the font alone. */
 	fontFamily: number | null;
-	/** Alignment to force, or `null` to leave it alone. */
+	/** Font-size ceiling, or `null` to leave it alone. */
+	fontSize: number | null;
+	/** Horizontal alignment to force, or `null` to leave it alone. */
 	textAlign: TextAlign | null;
+	/** Vertical alignment to force, or `null` to leave it alone. */
+	verticalAlign: VerticalAlign | null;
 }
 
 /** True when the settings ask for no change at all. */
 export function isNoop(defaults: StickyDefaults): boolean {
-	return defaults.fontFamily === null && defaults.textAlign === null;
+	return (
+		defaults.fontFamily === null &&
+		defaults.fontSize === null &&
+		defaults.textAlign === null &&
+		defaults.verticalAlign === null
+	);
 }
 
 /**
@@ -80,6 +118,24 @@ export function isAlignSetting(value: unknown): value is AlignSetting {
 	return value === "keep" || TEXT_ALIGNMENTS.includes(value as TextAlign);
 }
 
+/**
+ * Reports whether a value is a usable vertical-alignment setting.
+ *
+ * @param value - Candidate value.
+ */
+export function isVerticalAlignSetting(value: unknown): value is VAlignSetting {
+	return value === "keep" || VERTICAL_ALIGNMENTS.includes(value as VerticalAlign);
+}
+
+/**
+ * Reports whether a value is one of the offered font sizes.
+ *
+ * @param value - Candidate size. `0` is the plugin's "keep" marker.
+ */
+export function isFontSizeSetting(value: unknown): value is number {
+	return typeof value === "number" && FONT_SIZES.includes(value);
+}
+
 /** The parts of a Canvas-free Excalidraw element this module reads. */
 export interface ElementLike {
 	id?: unknown;
@@ -87,7 +143,9 @@ export interface ElementLike {
 	containerId?: unknown;
 	boundElements?: unknown;
 	fontFamily?: unknown;
+	fontSize?: unknown;
 	textAlign?: unknown;
+	verticalAlign?: unknown;
 }
 
 /** Reports whether an element is a sticky-note container. */
@@ -131,7 +189,9 @@ export function boundLabelOf(
 /** What still has to change on one label. */
 export interface LabelPatch {
 	fontFamily?: number;
+	fontSize?: number;
 	textAlign?: TextAlign;
+	verticalAlign?: VerticalAlign;
 }
 
 /**
@@ -153,8 +213,17 @@ export function labelPatch(
 	if (defaults.fontFamily !== null && label.fontFamily !== defaults.fontFamily) {
 		patch.fontFamily = defaults.fontFamily;
 	}
+	if (defaults.fontSize !== null && label.fontSize !== defaults.fontSize) {
+		patch.fontSize = defaults.fontSize;
+	}
 	if (defaults.textAlign !== null && label.textAlign !== defaults.textAlign) {
 		patch.textAlign = defaults.textAlign;
+	}
+	if (
+		defaults.verticalAlign !== null &&
+		label.verticalAlign !== defaults.verticalAlign
+	) {
+		patch.verticalAlign = defaults.verticalAlign;
 	}
 	return Object.keys(patch).length > 0 ? patch : null;
 }

@@ -35,18 +35,42 @@ label对齐:     'center'   ← 便签标签被强制居中
 | 设置 | 默认 | 说明 |
 |---|---|---|
 | 启用 | 开 | 关闭后连轮询都直接返回 |
-| 便签默认字体 | **不修改** | Excalidraw 内置 9 种字体的 id（Virgil / Helvetica / Cascadia / 本地字体 / Excalifont / Nunito / Lilita One / Comic Shanns / Liberation Sans） |
-| 便签默认对齐 | **左对齐** | 或居中 / 右对齐 / 不修改 |
+| 便签默认字体 | **Cascadia** | Excalidraw 内置 9 种字体的 id，或「不修改」 |
+| 便签字号上限 | 不修改 | 16 / 20 / 28 / 36（Excalidraw 自己的 S/M/L/XL），或「不修改」 |
+| 便签默认水平对齐 | **左对齐** | 或居中 / 右对齐 / 不修改 |
+| 便签默认垂直对齐 | **顶部** | 或垂直居中 / 底部 / 不修改 |
 | 套用到当前图纸的已有便签 | — | 一次性按钮；也会注册成命令 |
 
 > 9 种内置字体**都不含中文字形**，中文会回退到系统字体 —— 这是 Excalidraw 字体本身的限制，不是插件的问题。
+>
+> **字号是「上限」不是固定值**：便签会自动适配 —— 从上限往下缩，缩到下限后才加高便签。设大了并不保证那么大。
+
+## 能不能改 Excalidraw 的「全局对齐」达到同样效果？
+
+**横向：不能，已验证。** 在一张 `currentItemTextAlign` 已经是 `"left"` 的图纸里新建便签，标签仍然是 `"center"`：
+
+```
+label对齐:     'center'
+当前项对齐:    'left'
+```
+
+**纵向：也没有这个设置可改。** Excalidraw 的 appState 里**不存在**任何全局垂直对齐的键 —— `currentItemVerticalAlign`、`currentItemTextVerticalAlign`、`currentItemAlign` 全部 0 命中。
+
+而且 ExcalidrawAutomate 自己的 API 文档对 `style.verticalAlign` 的说明是：
+
+> `'top' | 'bottom' | 'middle'` —— **For future use, has no effect currently**
+
+所以本插件会把 `verticalAlign` **写进文字元素字段**（这是插件能做的极限），但**是否被渲染引擎采纳取决于 Excalidraw 版本**。如果你的版本忽略它，界面上看不出变化 —— 那不是插件没写进去。
+
+便签也没有自己专属的格式键：它唯一的便签专属 appState 键是 `currentItemStickynoteStrokeColor`（边框色）。所以不存在「只改便签、不动普通文本」的默认值可用，只能创建后改写。
 
 ## 已知限制
 
 1. **打字时可能先看到居中**，点一下画布空白处才变左对齐。这是刻意取舍：`textAlign` 在文字编辑器还开着时改写会打断输入，所以插件会等编辑结束。想立刻套用就点一下空白处（或用「套用到当前图纸」按钮）。
-2. **字号没有做成设置项**。便签的字号是**自动适配**的：Excalidraw 会从你给的字号上限往下缩，缩到下限后才加高便签。所以"默认字号"的语义是"上限"，设大了也会被压回去。
-3. 便签元素类型（`stickynote`）是 Excalidraw 0.18 才有的。旧版没有便签，插件会静默不动作。
-4. 罕见情况：如果 Excalidraw 修改了 label 的字段名，插件写入会失败 —— 会在控制台报一次错，不影响其它功能。
+2. **垂直对齐可能看不出效果** —— Excalidraw 自己把这个字段标为「目前无效果」，见上一节。
+3. **字号是「上限」**：便签会自动适配（从上限往下缩、缩到下限才加高便签），设大了也会被压回去。
+4. 便签元素类型（`stickynote`）是 Excalidraw 0.18 才有的。旧版没有便签，插件会静默不动作。
+5. 罕见情况：如果 Excalidraw 修改了 label 的字段名，插件写入会失败 —— 会在控制台报一次错，不影响其它功能。
 
 ## 安装
 

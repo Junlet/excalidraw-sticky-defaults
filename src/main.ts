@@ -32,7 +32,12 @@ import {
 } from "./settings";
 
 /** Returned when the feature is off, so every scan short-circuits. */
-const NO_DEFAULTS: StickyDefaults = { fontFamily: null, textAlign: null };
+const NO_DEFAULTS: StickyDefaults = {
+	fontFamily: null,
+	fontSize: null,
+	textAlign: null,
+	verticalAlign: null,
+};
 
 export default class StickyDefaultsPlugin extends Plugin {
 	settings: StickyDefaultsSettings = DEFAULT_SETTINGS;

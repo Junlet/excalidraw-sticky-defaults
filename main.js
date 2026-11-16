@@ -27,6 +27,12 @@ var import_obsidian2 = require("obsidian");
 
 // src/defaults.ts
 var TEXT_ALIGNMENTS = ["left", "center", "right"];
+var VERTICAL_ALIGNMENTS = [
+  "top",
+  "middle",
+  "bottom"
+];
+var FONT_SIZES = [16, 20, 28, 36];
 var FONT_OPTIONS = [
   { value: 1, label: "Virgil（手写）" },
   { value: 2, label: "Helvetica（无衬线）" },
@@ -39,13 +45,19 @@ var FONT_OPTIONS = [
   { value: 9, label: "Liberation Sans" }
 ];
 function isNoop(defaults) {
-  return defaults.fontFamily === null && defaults.textAlign === null;
+  return defaults.fontFamily === null && defaults.fontSize === null && defaults.textAlign === null && defaults.verticalAlign === null;
 }
 function isFontId(value) {
   return typeof value === "number" && FONT_OPTIONS.some((option) => option.value === value);
 }
 function isAlignSetting(value) {
   return value === "keep" || TEXT_ALIGNMENTS.includes(value);
+}
+function isVerticalAlignSetting(value) {
+  return value === "keep" || VERTICAL_ALIGNMENTS.includes(value);
+}
+function isFontSizeSetting(value) {
+  return typeof value === "number" && FONT_SIZES.includes(value);
 }
 function isStickyNote(element) {
   return element.type === "stickynote";
@@ -73,8 +85,14 @@ function labelPatch(label, defaults) {
   if (defaults.fontFamily !== null && label.fontFamily !== defaults.fontFamily) {
     patch.fontFamily = defaults.fontFamily;
   }
+  if (defaults.fontSize !== null && label.fontSize !== defaults.fontSize) {
+    patch.fontSize = defaults.fontSize;
+  }
   if (defaults.textAlign !== null && label.textAlign !== defaults.textAlign) {
     patch.textAlign = defaults.textAlign;
+  }
+  if (defaults.verticalAlign !== null && label.verticalAlign !== defaults.verticalAlign) {
+    patch.verticalAlign = defaults.verticalAlign;
   }
   return Object.keys(patch).length > 0 ? patch : null;
 }
@@ -254,8 +272,14 @@ var StickyNoteFixer = class {
         if (entry.patch.fontFamily !== void 0) {
           target.fontFamily = entry.patch.fontFamily;
         }
+        if (entry.patch.fontSize !== void 0) {
+          target.fontSize = entry.patch.fontSize;
+        }
         if (entry.patch.textAlign !== void 0) {
           target.textAlign = entry.patch.textAlign;
+        }
+        if (entry.patch.verticalAlign !== void 0) {
+          target.verticalAlign = entry.patch.verticalAlign;
         }
       }
       return await ea.addElementsToView(false, true, false, false, "NEVER");
@@ -293,21 +317,29 @@ var StickyNoteFixer = class {
 var import_obsidian = require("obsidian");
 var DEFAULT_SETTINGS = {
   enabled: true,
-  fontFamily: 0,
-  textAlign: "left"
+  fontFamily: 3,
+  fontSize: 0,
+  textAlign: "left",
+  verticalAlign: "top"
 };
 function normalizeSettings(stored) {
   const raw = stored && typeof stored === "object" ? stored : {};
+  const fontFamily = raw.fontFamily === 0 || isFontId(raw.fontFamily) ? raw.fontFamily : DEFAULT_SETTINGS.fontFamily;
+  const fontSize = raw.fontSize === 0 || isFontSizeSetting(raw.fontSize) ? raw.fontSize : DEFAULT_SETTINGS.fontSize;
   return {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_SETTINGS.enabled,
-    fontFamily: isFontId(raw.fontFamily) ? raw.fontFamily : DEFAULT_SETTINGS.fontFamily,
-    textAlign: isAlignSetting(raw.textAlign) ? raw.textAlign : DEFAULT_SETTINGS.textAlign
+    fontFamily,
+    fontSize,
+    textAlign: isAlignSetting(raw.textAlign) ? raw.textAlign : DEFAULT_SETTINGS.textAlign,
+    verticalAlign: isVerticalAlignSetting(raw.verticalAlign) ? raw.verticalAlign : DEFAULT_SETTINGS.verticalAlign
   };
 }
 function toStickyDefaults(settings) {
   return {
     fontFamily: isFontId(settings.fontFamily) ? settings.fontFamily : null,
-    textAlign: settings.textAlign === "keep" ? null : settings.textAlign
+    fontSize: isFontSizeSetting(settings.fontSize) ? settings.fontSize : null,
+    textAlign: settings.textAlign === "keep" ? null : settings.textAlign,
+    verticalAlign: settings.verticalAlign === "keep" ? null : settings.verticalAlign
   };
 }
 var ALIGN_LABELS = {
@@ -315,6 +347,18 @@ var ALIGN_LABELS = {
   center: "居中",
   right: "右对齐",
   keep: "不修改"
+};
+var VALIGN_LABELS = {
+  top: "顶部",
+  middle: "垂直居中",
+  bottom: "底部",
+  keep: "不修改"
+};
+var SIZE_LABELS = {
+  16: "16（S）",
+  20: "20（M / Excalidraw 默认）",
+  28: "28（L）",
+  36: "36（XL）"
 };
 var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -325,7 +369,7 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian.Setting(containerEl).setName("启用").setDesc(
-      "新建便签后自动套用下面的字体与对齐。已有便签不受影响 —— 要一次性套用到当前图纸，用下面的按钮或命令。"
+      "新建便签后自动套用下面各项。已有便签不受影响 —— 要一次性套用到当前图纸，用最下面的按钮或同名命令。"
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enabled).onChange(async (value) => {
         this.plugin.settings.enabled = value;
@@ -345,7 +389,21 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("便签默认对齐").setDesc(
+    new import_obsidian.Setting(containerEl).setName("便签字号上限").setDesc(
+      "这是**上限**而不是固定字号：便签会自动适配 —— 字号从上限往下缩，缩到下限后才加高便签。所以设大了并不保证那么大。"
+    ).addDropdown((dropdown) => {
+      var _a;
+      dropdown.addOption("0", "不修改");
+      for (const size of FONT_SIZES) {
+        dropdown.addOption(String(size), (_a = SIZE_LABELS[size]) != null ? _a : String(size));
+      }
+      dropdown.setValue(String(this.plugin.settings.fontSize)).onChange(async (value) => {
+        const parsed = Number.parseInt(value, 10);
+        this.plugin.settings.fontSize = isFontSizeSetting(parsed) ? parsed : 0;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("便签默认水平对齐").setDesc(
       "Excalidraw 会把便签文字**强制居中**，改它的默认值没用 —— 所以本插件是在便签创建后改写文字元素。副作用：打字时可能先看到居中、点一下空白处才变左对齐（编辑中不打断你输入）。"
     ).addDropdown((dropdown) => {
       for (const value of ["keep", ...TEXT_ALIGNMENTS]) {
@@ -356,8 +414,21 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
+    new import_obsidian.Setting(containerEl).setName("便签默认垂直对齐").setDesc(
+      "会写进文字元素的 `verticalAlign` 字段。**但 Excalidraw 自己的 API 文档把这个字段标注为「For future use, has no effect currently」**，所以你的版本若忽略它，界面上看不出变化 —— 那不是插件没写进去。另外 Excalidraw 没有「全局垂直对齐」这个默认值，无法从设置里改。"
+    ).addDropdown((dropdown) => {
+      for (const value of ["keep", ...VERTICAL_ALIGNMENTS]) {
+        dropdown.addOption(value, VALIGN_LABELS[value]);
+      }
+      dropdown.setValue(this.plugin.settings.verticalAlign).onChange(async (value) => {
+        this.plugin.settings.verticalAlign = isVerticalAlignSetting(
+          value
+        ) ? value : "keep";
+        await this.plugin.saveSettings();
+      });
+    });
     new import_obsidian.Setting(containerEl).setName("套用到当前图纸的已有便签").setDesc(
-      "把上面两项立即套用到所有已打开的 Excalidraw 图纸里现存的便签。正在编辑的便签会跳过，点一下空白处再点一次即可。"
+      "把上面各项立即套用到所有已打开的 Excalidraw 图纸里现存的便签。正在编辑的便签会跳过，点一下空白处再点一次即可。"
     ).addButton(
       (button) => button.setButtonText("套用").onClick(async () => {
         await this.plugin.applyToOpenDrawings(true);
@@ -367,7 +438,12 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
 };
 
 // src/main.ts
-var NO_DEFAULTS = { fontFamily: null, textAlign: null };
+var NO_DEFAULTS = {
+  fontFamily: null,
+  fontSize: null,
+  textAlign: null,
+  verticalAlign: null
+};
 var StickyDefaultsPlugin = class extends import_obsidian2.Plugin {
   constructor() {
     super(...arguments);

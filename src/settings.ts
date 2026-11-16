@@ -1,21 +1,27 @@
 /**
  * Settings storage and the settings tab.
  *
- * Storage is deliberately plain: `0` means "leave the font alone" and `"keep"`
- * means "leave the alignment alone", so a stored value is always either a real
- * Excalidraw id or an explicit opt-out. {@link toStickyDefaults} converts that
- * into the `null`-based shape the rest of the code uses.
+ * Storage is deliberately plain: `0` means "leave this numeric property alone"
+ * and `"keep"` means "leave this alignment alone", so a stored value is always
+ * either a real Excalidraw value or an explicit opt-out.
+ * {@link toStickyDefaults} converts that into the `null`-based shape the rest of
+ * the code uses.
  */
 
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type StickyDefaultsPlugin from "./main";
 import {
 	FONT_OPTIONS,
+	FONT_SIZES,
 	TEXT_ALIGNMENTS,
+	VERTICAL_ALIGNMENTS,
 	isAlignSetting,
 	isFontId,
+	isFontSizeSetting,
+	isVerticalAlignSetting,
 	type AlignSetting,
 	type StickyDefaults,
+	type VAlignSetting,
 } from "./defaults";
 
 /** Persisted settings. */
@@ -24,20 +30,26 @@ export interface StickyDefaultsSettings {
 	enabled: boolean;
 	/** Excalidraw font id to force, or `0` to leave the font alone. */
 	fontFamily: number;
-	/** Alignment to force, or `"keep"`. */
+	/** Font-size ceiling, or `0` to leave it alone. */
+	fontSize: number;
+	/** Horizontal alignment to force, or `"keep"`. */
 	textAlign: AlignSetting;
+	/** Vertical alignment to force, or `"keep"`. */
+	verticalAlign: VAlignSetting;
 }
 
 /**
- * Shipped defaults.
+ * Shipped defaults: Cascadia, 左对齐 + 顶部对齐.
  *
- * On with left alignment: forcing left is the whole point of the plugin, and a
- * note is only affected when it is created *after* installation.
+ * Font size stays "keep" -- most people want Excalidraw's own sizing there, and
+ * for a sticky note the value is only a ceiling anyway.
  */
 export const DEFAULT_SETTINGS: StickyDefaultsSettings = {
 	enabled: true,
-	fontFamily: 0,
+	fontFamily: 3,
+	fontSize: 0,
 	textAlign: "left",
+	verticalAlign: "top",
 };
 
 /**
@@ -51,17 +63,31 @@ export function normalizeSettings(stored: unknown): StickyDefaultsSettings {
 		stored && typeof stored === "object" ? stored : {}
 	) as Partial<StickyDefaultsSettings>;
 
+	// `0` is a real stored value meaning "leave it alone", so it must survive a
+	// reload rather than be mistaken for a missing/invalid entry. Only a value
+	// that is neither `0` nor a known id falls back to the default.
+	const fontFamily =
+		raw.fontFamily === 0 || isFontId(raw.fontFamily)
+			? (raw.fontFamily as number)
+			: DEFAULT_SETTINGS.fontFamily;
+	const fontSize =
+		raw.fontSize === 0 || isFontSizeSetting(raw.fontSize)
+			? (raw.fontSize as number)
+			: DEFAULT_SETTINGS.fontSize;
+
 	return {
 		enabled:
 			typeof raw.enabled === "boolean"
 				? raw.enabled
 				: DEFAULT_SETTINGS.enabled,
-		fontFamily: isFontId(raw.fontFamily)
-			? raw.fontFamily
-			: DEFAULT_SETTINGS.fontFamily,
+		fontFamily,
+		fontSize,
 		textAlign: isAlignSetting(raw.textAlign)
 			? raw.textAlign
 			: DEFAULT_SETTINGS.textAlign,
+		verticalAlign: isVerticalAlignSetting(raw.verticalAlign)
+			? raw.verticalAlign
+			: DEFAULT_SETTINGS.verticalAlign,
 	};
 }
 
@@ -76,16 +102,35 @@ export function toStickyDefaults(
 ): StickyDefaults {
 	return {
 		fontFamily: isFontId(settings.fontFamily) ? settings.fontFamily : null,
+		fontSize: isFontSizeSetting(settings.fontSize) ? settings.fontSize : null,
 		textAlign: settings.textAlign === "keep" ? null : settings.textAlign,
+		verticalAlign:
+			settings.verticalAlign === "keep" ? null : settings.verticalAlign,
 	};
 }
 
-/** Translated labels for the alignment dropdown. */
+/** Labels for the horizontal-alignment dropdown. */
 const ALIGN_LABELS: Record<AlignSetting, string> = {
 	left: "左对齐",
 	center: "居中",
 	right: "右对齐",
 	keep: "不修改",
+};
+
+/** Labels for the vertical-alignment dropdown. */
+const VALIGN_LABELS: Record<VAlignSetting, string> = {
+	top: "顶部",
+	middle: "垂直居中",
+	bottom: "底部",
+	keep: "不修改",
+};
+
+/** Labels for the font-size dropdown, matching Excalidraw's own presets. */
+const SIZE_LABELS: Record<number, string> = {
+	16: "16（S）",
+	20: "20（M / Excalidraw 默认）",
+	28: "28（L）",
+	36: "36（XL）",
 };
 
 /** Settings tab shown under Settings -> Community plugins -> this plugin. */
@@ -104,8 +149,8 @@ export class StickyDefaultsSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("启用")
 			.setDesc(
-				"新建便签后自动套用下面的字体与对齐。已有便签不受影响 —— " +
-					"要一次性套用到当前图纸，用下面的按钮或命令。"
+				"新建便签后自动套用下面各项。已有便签不受影响 —— " +
+					"要一次性套用到当前图纸，用最下面的按钮或同名命令。"
 			)
 			.addToggle((toggle) =>
 				toggle
@@ -140,7 +185,30 @@ export class StickyDefaultsSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("便签默认对齐")
+			.setName("便签字号上限")
+			.setDesc(
+				"这是**上限**而不是固定字号：便签会自动适配 —— " +
+					"字号从上限往下缩，缩到下限后才加高便签。" +
+					"所以设大了并不保证那么大。"
+			)
+			.addDropdown((dropdown) => {
+				dropdown.addOption("0", "不修改");
+				for (const size of FONT_SIZES) {
+					dropdown.addOption(String(size), SIZE_LABELS[size] ?? String(size));
+				}
+				dropdown
+					.setValue(String(this.plugin.settings.fontSize))
+					.onChange(async (value) => {
+						const parsed = Number.parseInt(value, 10);
+						this.plugin.settings.fontSize = isFontSizeSetting(parsed)
+							? parsed
+							: 0;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("便签默认水平对齐")
 			.setDesc(
 				"Excalidraw 会把便签文字**强制居中**，改它的默认值没用 —— " +
 					"所以本插件是在便签创建后改写文字元素。副作用：打字时可能先看到" +
@@ -161,9 +229,33 @@ export class StickyDefaultsSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
+			.setName("便签默认垂直对齐")
+			.setDesc(
+				"会写进文字元素的 `verticalAlign` 字段。**但 Excalidraw 自己的 API " +
+					"文档把这个字段标注为「For future use, has no effect currently」**，" +
+					"所以你的版本若忽略它，界面上看不出变化 —— 那不是插件没写进去。" +
+					"另外 Excalidraw 没有「全局垂直对齐」这个默认值，无法从设置里改。"
+			)
+			.addDropdown((dropdown) => {
+				for (const value of ["keep", ...VERTICAL_ALIGNMENTS] as VAlignSetting[]) {
+					dropdown.addOption(value, VALIGN_LABELS[value]);
+				}
+				dropdown
+					.setValue(this.plugin.settings.verticalAlign)
+					.onChange(async (value) => {
+						this.plugin.settings.verticalAlign = isVerticalAlignSetting(
+							value
+						)
+							? value
+							: "keep";
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
 			.setName("套用到当前图纸的已有便签")
 			.setDesc(
-				"把上面两项立即套用到所有已打开的 Excalidraw 图纸里现存的便签。" +
+				"把上面各项立即套用到所有已打开的 Excalidraw 图纸里现存的便签。" +
 					"正在编辑的便签会跳过，点一下空白处再点一次即可。"
 			)
 			.addButton((button) =>
