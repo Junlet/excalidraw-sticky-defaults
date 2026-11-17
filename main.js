@@ -21,10 +21,14 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var main_exports = {};
 __export(main_exports, {
   default: () => StickyDefaultsPlugin,
+  describeInstall: () => describeInstall,
   describeOutcome: () => describeOutcome
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian2 = require("obsidian");
+
+// src/constants.ts
+var EXCALIDRAW_PLUGIN_ID = "obsidian-excalidraw-plugin";
 
 // src/defaults.ts
 var TEXT_ALIGNMENTS = ["left", "center", "right"];
@@ -99,7 +103,6 @@ function labelPatch(label, defaults) {
 }
 
 // src/apply.ts
-var EXCALIDRAW_PLUGIN_ID = "obsidian-excalidraw-plugin";
 function editingIds(state) {
   const editing = state == null ? void 0 : state.editingTextElement;
   if (!editing || typeof editing !== "object") return {};
@@ -216,6 +219,103 @@ async function applyStickyDefaults(app, defaults, debug = false) {
     }
   }
   return outcome;
+}
+
+// src/script-installer.ts
+var SCRIPT_FILE_NAME = "套用便签默认设置.md";
+var MANAGED_MARKER = "managed-by: excalidraw-sticky-defaults";
+var DEFAULT_SCRIPT_FOLDER = "Excalidraw/Scripts";
+var SCRIPT_CONTENT = `/*
+# 套用便签默认设置
+
+把 Excalidraw 便签的**字体 / 字号上限 / 水平对齐 / 垂直对齐**一键改成你在设置里定的值。
+
+本脚本**不含改写逻辑**，只是把 **Excalidraw Sticky Note Defaults** 插件的「立即套用」搬进脚本库，方便在画布里直接点。设置项、改写逻辑、结果提示都在那个插件里 —— 这样只有一份真相，不会两边不一致。
+
+## 为什么需要它
+
+Excalidraw 会把便签文字**强制居中**，改它的默认对齐没用；便签也没有专属的格式键。所以只能创建后改写文字元素。而新建便签会立刻打开文字编辑器，自动改写容易和编辑器抢跑 —— 因此改成**手动触发**。
+
+## 用法
+
+1. 在 Excalidraw 里打开脚本库，点「套用便签默认设置」
+2. 或命令面板搜「套用便签默认设置」
+3. 或在插件设置页点「立即套用」
+
+三者效果完全相同。点完右上角会提示改写了几个便签。
+
+## 依赖
+
+必须启用 **Excalidraw Sticky Note Defaults** 插件（id: \`excalidraw-sticky-defaults\`）；没启用时会提示你去启用。
+
+## 提示
+
+- 正在编辑的便签会被跳过（避免打断输入）—— 点一下画布空白处再点一次即可
+- 幂等：已经符合的便签不会被重复写，也不占撤销栈
+- ${MANAGED_MARKER}（这一行由插件写入，用于判断文件归属；删除它不会影响脚本运行）
+*/
+
+const plugin = window.app?.plugins?.plugins?.["excalidraw-sticky-defaults"];
+
+if (!plugin || typeof plugin.applyNow !== "function") {
+	new Notice(
+		"请先在「设置 → 第三方插件」启用 Excalidraw Sticky Note Defaults，再运行这个脚本。"
+	);
+	return;
+}
+
+await plugin.applyNow();
+`;
+function resolveScriptFolder(app) {
+  var _a, _b;
+  const registry = app.plugins;
+  const excalidraw = (_a = registry == null ? void 0 : registry.plugins) == null ? void 0 : _a[EXCALIDRAW_PLUGIN_ID];
+  const configured = (_b = excalidraw == null ? void 0 : excalidraw.settings) == null ? void 0 : _b.scriptFolderPath;
+  if (typeof configured !== "string") return DEFAULT_SCRIPT_FOLDER;
+  const trimmed = configured.replace(/\\/gu, "/").replace(/^\/+|\/+$/gu, "").trim();
+  return trimmed.length > 0 ? trimmed : DEFAULT_SCRIPT_FOLDER;
+}
+function joinPath(folder, name) {
+  return folder.length > 0 ? `${folder}/${name}` : name;
+}
+async function ensureFolder(vault, folder) {
+  var _a, _b;
+  if (folder.length === 0) return;
+  if ((_a = vault.getFolderByPath) == null ? void 0 : _a.call(vault, folder)) return;
+  try {
+    await vault.createFolder(folder);
+  } catch (e) {
+    if (!((_b = vault.getFolderByPath) == null ? void 0 : _b.call(vault, folder))) throw new Error(`无法创建目录：${folder}`);
+  }
+}
+async function installScript(app) {
+  const vault = app.vault;
+  if (!vault || typeof vault.create !== "function") {
+    return { status: "error", path: "", reason: "拿不到 vault 接口" };
+  }
+  const folder = resolveScriptFolder(app);
+  const path = joinPath(folder, SCRIPT_FILE_NAME);
+  try {
+    await ensureFolder(vault, folder);
+    const existing = vault.getAbstractFileByPath(path);
+    if (existing) {
+      const current = await vault.read(existing);
+      if (current === SCRIPT_CONTENT) return { status: "present", path };
+      if (!current.includes(MANAGED_MARKER)) {
+        return { status: "conflict", path };
+      }
+      await vault.modify(existing, SCRIPT_CONTENT);
+      return { status: "updated", path };
+    }
+    await vault.create(path, SCRIPT_CONTENT);
+    return { status: "created", path };
+  } catch (error) {
+    return {
+      status: "error",
+      path,
+      reason: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 // src/settings.ts
@@ -349,6 +449,13 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian.Setting(containerEl).setName("在 Excalidraw 脚本库里装一个按钮").setDesc(
+      "把配套脚本写进**本库**的 Excalidraw 脚本目录（目录路径取自 Excalidraw 设置），之后就能在画布的脚本库里直接点它。**换库时也点一下这里** —— 插件能通过 BRAT 自动装过去，但脚本是库里的文件，不会跟着走。不会覆盖你自己写的同名脚本。"
+    ).addButton(
+      (button) => button.setButtonText("安装 / 更新脚本").onClick(async () => {
+        await this.plugin.installCompanionScript();
+      })
+    );
   }
 };
 
@@ -379,6 +486,20 @@ function describeOutcome(outcome) {
   }
   return `${parts.join("；")}（共发现 ${outcome.notes} 个便签）`;
 }
+function describeInstall(result) {
+  switch (result.status) {
+    case "created":
+      return `已安装脚本：${result.path}（在 Excalidraw 脚本库里即可看到）`;
+    case "updated":
+      return `已更新脚本：${result.path}`;
+    case "present":
+      return `脚本已是最新，无需重复安装：${result.path}`;
+    case "conflict":
+      return `已存在同名脚本但内容不同，未覆盖：${result.path}。如需用插件版，请先改名或删除它。`;
+    default:
+      return `安装脚本失败：${result.reason}（目标：${result.path}）`;
+  }
+}
 var StickyDefaultsPlugin = class extends import_obsidian2.Plugin {
   constructor() {
     super(...arguments);
@@ -395,6 +516,23 @@ var StickyDefaultsPlugin = class extends import_obsidian2.Plugin {
       name: "套用便签默认设置（所有已打开的图纸）",
       callback: () => void this.applyNow()
     });
+    this.addCommand({
+      id: "install-sticky-script",
+      name: "安装脚本到 Excalidraw 脚本库",
+      callback: () => void this.installCompanionScript()
+    });
+  }
+  /**
+   * Writes the companion script into this vault's Excalidraw script folder.
+   *
+   * This is how the script reaches another vault: BRAT installs the plugin, and
+   * one command here creates the script-library button next to it. The folder is
+   * read from Excalidraw's own settings, so a vault with a customised script
+   * path also gets it in the right place.
+   */
+  async installCompanionScript() {
+    const result = await installScript(this.app);
+    new import_obsidian2.Notice(describeInstall(result), NOTICE_MS);
   }
   /**
    * Runs the rewrite and reports the result.

@@ -20,6 +20,7 @@
  */
 
 import type { App } from "obsidian";
+import { EXCALIDRAW_PLUGIN_ID } from "./constants";
 import {
 	boundLabelOf,
 	isNoop,
@@ -29,9 +30,6 @@ import {
 	type LabelPatch,
 	type StickyDefaults,
 } from "./defaults";
-
-/** `id` of the Excalidraw plugin in Obsidian's plugin registry. */
-const EXCALIDRAW_PLUGIN_ID = "obsidian-excalidraw-plugin";
 
 /** What one run of {@link applyStickyDefaults} did. */
 export interface ApplyOutcome {

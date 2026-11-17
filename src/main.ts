@@ -30,6 +30,7 @@
 import { Notice, Plugin } from "obsidian";
 import { applyStickyDefaults, type ApplyOutcome } from "./apply";
 import { isNoop } from "./defaults";
+import { installScript, type InstallResult } from "./script-installer";
 import {
 	DEFAULT_SETTINGS,
 	StickyDefaultsSettingTab,
@@ -79,6 +80,30 @@ export function describeOutcome(outcome: ApplyOutcome): string {
 	return `${parts.join("；")}（共发现 ${outcome.notes} 个便签）`;
 }
 
+/**
+ * Turns an install result into one sentence.
+ *
+ * The conflict case is the interesting one: the plugin refuses to overwrite a
+ * file it did not write, and says so instead of silently replacing the user's
+ * own script of the same name.
+ *
+ * @param result - What {@link installScript} did.
+ */
+export function describeInstall(result: InstallResult): string {
+	switch (result.status) {
+		case "created":
+			return `已安装脚本：${result.path}（在 Excalidraw 脚本库里即可看到）`;
+		case "updated":
+			return `已更新脚本：${result.path}`;
+		case "present":
+			return `脚本已是最新，无需重复安装：${result.path}`;
+		case "conflict":
+			return `已存在同名脚本但内容不同，未覆盖：${result.path}。如需用插件版，请先改名或删除它。`;
+		default:
+			return `安装脚本失败：${result.reason}（目标：${result.path}）`;
+	}
+}
+
 export default class StickyDefaultsPlugin extends Plugin {
 	settings: StickyDefaultsSettings = DEFAULT_SETTINGS;
 
@@ -97,6 +122,25 @@ export default class StickyDefaultsPlugin extends Plugin {
 			name: "套用便签默认设置（所有已打开的图纸）",
 			callback: () => void this.applyNow(),
 		});
+
+		this.addCommand({
+			id: "install-sticky-script",
+			name: "安装脚本到 Excalidraw 脚本库",
+			callback: () => void this.installCompanionScript(),
+		});
+	}
+
+	/**
+	 * Writes the companion script into this vault's Excalidraw script folder.
+	 *
+	 * This is how the script reaches another vault: BRAT installs the plugin, and
+	 * one command here creates the script-library button next to it. The folder is
+	 * read from Excalidraw's own settings, so a vault with a customised script
+	 * path also gets it in the right place.
+	 */
+	async installCompanionScript(): Promise<void> {
+		const result = await installScript(this.app);
+		new Notice(describeInstall(result), NOTICE_MS);
 	}
 
 	/**

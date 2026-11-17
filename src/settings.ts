@@ -290,5 +290,21 @@ export class StickyDefaultsSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+
+		new Setting(containerEl)
+			.setName("在 Excalidraw 脚本库里装一个按钮")
+			.setDesc(
+				"把配套脚本写进**本库**的 Excalidraw 脚本目录（目录路径取自 Excalidraw 设置），" +
+					"之后就能在画布的脚本库里直接点它。**换库时也点一下这里** —— " +
+					"插件能通过 BRAT 自动装过去，但脚本是库里的文件，不会跟着走。" +
+					"不会覆盖你自己写的同名脚本。"
+			)
+			.addButton((button) =>
+				button
+					.setButtonText("安装 / 更新脚本")
+					.onClick(async () => {
+						await this.plugin.installCompanionScript();
+					})
+			);
 	}
 }
