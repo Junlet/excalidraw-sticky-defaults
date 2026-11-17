@@ -97,16 +97,45 @@ label对齐:     'center'
 | Obsidian | ≥ 1.8.7 |
 | **Excalidraw** 社区插件 | 必须启用（id `obsidian-excalidraw-plugin`），且版本含 Sticky note（0.18+） |
 
-没有 Excalidraw 不会崩：拿不到 ExcalidrawAutomate 时只在控制台提示一次。
+没有 Excalidraw 不会崩：拿不到 ExcalidrawAutomate 时会在 Notice 里说明。
+
+## 在 Excalidraw 脚本库里加一个「按钮」
+
+Excalidraw 的脚本库把**脚本文件当作可点的按钮**。想在最顺手的位置点一下就更方便，可以把下面这个脚本放进脚本目录（Excalidraw 设置的 **脚本文件夹**，默认 `Excalidraw/Scripts`）：
+
+文件名：`套用便签默认设置.md`
+
+````markdown
+/*
+# 套用便签默认设置
+
+把便签的字体 / 字号上限 / 水平对齐 / 垂直对齐改成设置里的值。
+本脚本不含逻辑，只是调用 Excalidraw Sticky Note Defaults 插件的 applyNow()。
+*/
+const plugin = window.app?.plugins?.plugins?.["excalidraw-sticky-defaults"];
+
+if (!plugin || typeof plugin.applyNow !== "function") {
+	new Notice(
+		"请先在「设置 → 第三方插件」启用 Excalidraw Sticky Note Defaults，再运行这个脚本。"
+	);
+	return;
+}
+
+await plugin.applyNow();
+````
+
+**为什么只做转发**：设置项、改写逻辑、结果提示都留在插件里，只有一份真相；以后插件改了行为，脚本不用跟着改。
+
+> 脚本依赖插件处于启用状态。脚本目录里新增文件后，若脚本库没立刻出现，重载 Obsidian 即可。
 
 ## 实现要点（给改代码的人）
 
 | 文件 | 职责 |
 |---|---|
 | `src/defaults.ts` | 纯逻辑：字体/对齐取值校验、找 label、算最小补丁 —— **不依赖 Obsidian，可单测** |
-| `src/apply.ts` | 轮询场景版本、识别新便签、编辑中跳过、经 ExcalidrawAutomate 写回 |
+| `src/apply.ts` | 一次性的 `applyStickyDefaults()`：遍历已打开图纸、跳过编辑中的便签、经 ExcalidrawAutomate 写回 |
 | `src/settings.ts` | 设置存储（`0` = 不改字体、`"keep"` = 不改对齐）与设置面板 |
-| `src/main.ts` | 生命周期、300ms 轮询、命令 |
+| `src/main.ts` | 生命周期、丝带按钮、命令、结果 Notice |
 
 **为什么是轮询**：目标版本的 ExcalidrawAutomate 没有 `onChange` / `offChange`，Excalidraw 插件也不派发场景变化事件，所以只能用 `getSceneVersion()` 做廉价的变更检测。
 
