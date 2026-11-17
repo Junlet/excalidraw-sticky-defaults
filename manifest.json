@@ -1,9 +1,9 @@
 {
   "id": "excalidraw-sticky-defaults",
   "name": "Excalidraw Sticky Note Defaults",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "minAppVersion": "1.8.7",
-  "description": "让 Excalidraw 新建的便签（Sticky note）自动套用指定字体、字号与左右/上下对齐。",
+  "description": "一键把 Excalidraw 便签的字体、字号与左右/上下对齐改成你要的样子（Excalidraw 自己强制居中且无设置项）。",
   "author": "Junlet",
   "authorUrl": "",
   "isDesktopOnly": false

@@ -1,7 +1,8 @@
 /**
  * Excalidraw Sticky Note Defaults
  *
- * New Excalidraw sticky notes, with your font and left alignment.
+ * Rewrites the labels of Excalidraw sticky notes so they use your font, size and
+ * alignment.
  *
  * WHY A PLUGIN IS NEEDED AT ALL
  * -----------------------------
@@ -11,18 +12,24 @@
  * the single sticky-specific appState key is `currentItemStickynoteStrokeColor` --
  * so there is no default to change that would leave ordinary text alone.
  *
- * The label is a plain text element, though, so this plugin rewrites it after
- * creation: poll each open drawing, and when a sticky note appears that was not
- * there before, force the configured `fontFamily` / `textAlign` on its label.
+ * WHY IT IS A BUTTON AND NOT A WATCHER
+ * ------------------------------------
+ * The label is a plain text element, so the plugin can rewrite it -- but only
+ * once. A note opens its text editor the moment it is created, and when that
+ * editor commits it writes the label back with its creation-time values,
+ * undoing any automatic patch. Watching for that and re-patching was fragile and
+ * failed silently.
  *
- * Notes that already exist when a drawing is opened are never touched, and a
- * note the user later reformats by hand is not reverted -- only ids never seen
- * before are processed.
+ * So the trigger is manual and explicit: the ribbon button, the command, or the
+ * button in the settings pane. Each click rewrites every sticky note in every
+ * open drawing and then reports exactly what happened -- how many changed, how
+ * many were skipped because you were editing them, and whether Excalidraw could
+ * not be reached at all.
  */
 
 import { Notice, Plugin } from "obsidian";
-import { StickyNoteFixer, TICK_MS } from "./apply";
-import type { StickyDefaults } from "./defaults";
+import { applyStickyDefaults, type ApplyOutcome } from "./apply";
+import { isNoop } from "./defaults";
 import {
 	DEFAULT_SETTINGS,
 	StickyDefaultsSettingTab,
@@ -31,65 +38,93 @@ import {
 	type StickyDefaultsSettings,
 } from "./settings";
 
-/** Returned when the feature is off, so every scan short-circuits. */
-const NO_DEFAULTS: StickyDefaults = {
-	fontFamily: null,
-	fontSize: null,
-	textAlign: null,
-	verticalAlign: null,
-};
+/** Icon id for the ribbon button; the name is Excalidraw's own sticky-note idea. */
+const RIBBON_ICON = "sticky-note";
+
+/** How long the result notice stays up. */
+const NOTICE_MS = 8000;
+
+/**
+ * Turns the outcome into one sentence the user can act on.
+ *
+ * Every branch says something concrete: "nothing found" and "everything already
+ * matched" must not look the same as "it silently did nothing", which is exactly
+ * how the earlier polling version felt.
+ *
+ * @param outcome - What the run did.
+ */
+export function describeOutcome(outcome: ApplyOutcome): string {
+	if (outcome.noAutomate) {
+		return "取不到 ExcalidrawAutomate：请确认 Excalidraw 插件已启用并与 Obsidian 版本匹配。";
+	}
+	if (outcome.notes === 0) {
+		return "没有找到便签：请先打开一张含便签的 Excalidraw 图纸，再点这个按钮。";
+	}
+
+	const parts: string[] = [];
+	if (outcome.changed > 0) {
+		parts.push(`已改写 ${outcome.changed} 个便签`);
+	} else {
+		parts.push("没有需要改写的便签（已经是目标样式）");
+	}
+	if (outcome.editing > 0) {
+		parts.push(`跳过 ${outcome.editing} 个正在编辑的（点一下画布空白处再点一次）`);
+	}
+	if (outcome.noLabel > 0) {
+		parts.push(`${outcome.noLabel} 个找不到文字元素`);
+	}
+	if (outcome.failed > 0) {
+		parts.push(`${outcome.failed} 张图纸写入失败（详见控制台）`);
+	}
+	return `${parts.join("；")}（共发现 ${outcome.notes} 个便签）`;
+}
 
 export default class StickyDefaultsPlugin extends Plugin {
 	settings: StickyDefaultsSettings = DEFAULT_SETTINGS;
 
-	/** Watches drawings and rewrites new sticky notes. */
-	private fixer: StickyNoteFixer | null = null;
-
 	async onload(): Promise<void> {
 		await this.loadSettings();
 
-		// The reader is a closure over live settings, so changing a dropdown takes
-		// effect on the next tick without restarting the poller.
-		this.fixer = new StickyNoteFixer(
-			this.app,
-			() =>
-				this.settings.enabled ? toStickyDefaults(this.settings) : NO_DEFAULTS,
-			() => this.settings.debugLog
-		);
-
 		this.addSettingTab(new StickyDefaultsSettingTab(this.app, this));
 
-		// Cleared automatically when the plugin unloads.
-		this.registerInterval(
-			window.setInterval(() => void this.fixer?.tick(), TICK_MS)
-		);
+		// No interval, no background work: the plugin only acts when asked.
+		this.addRibbonIcon(RIBBON_ICON, "套用便签默认设置", () => {
+			void this.applyNow();
+		});
 
 		this.addCommand({
-			id: "apply-to-open-drawings",
-			name: "把便签默认设置套用到已打开的图纸",
-			callback: () => void this.applyToOpenDrawings(false),
+			id: "apply-sticky-defaults",
+			name: "套用便签默认设置（所有已打开的图纸）",
+			callback: () => void this.applyNow(),
 		});
 	}
 
 	/**
-	 * Applies the defaults to the notes that already exist.
+	 * Runs the rewrite and reports the result.
 	 *
-	 * @param fromSettingsTab - Whether to confirm in a notice; the command already
-	 *   produces its own feedback, and a silent button would be a mystery.
+	 * The same notice is shown whether it was triggered from the ribbon, the
+	 * command or the settings tab: the outcome is what matters, not the entry
+	 * point.
 	 */
-	async applyToOpenDrawings(fromSettingsTab: boolean): Promise<void> {
+	async applyNow(): Promise<void> {
 		if (!this.settings.enabled) {
-			new Notice("便签默认设置已关闭，先打开「启用」。");
+			new Notice("便签默认设置已关闭：先在上面打开「启用」。");
 			return;
 		}
-		const changed = (await this.fixer?.applyToExisting()) ?? 0;
-		new Notice(
-			changed > 0
-				? `已改写 ${changed} 个便签的文字样式。`
-				: fromSettingsTab
-					? "没有需要改写的便签（可能正在编辑中，点一下画布空白处再试）。"
-					: "没有需要改写的便签。"
+		const defaults = toStickyDefaults(this.settings);
+		if (isNoop(defaults)) {
+			new Notice(
+				"字体、字号、水平对齐、垂直对齐全都是「不修改」，没有可套用的内容。"
+			);
+			return;
+		}
+
+		const outcome = await applyStickyDefaults(
+			this.app,
+			defaults,
+			this.settings.debugLog
 		);
+		new Notice(describeOutcome(outcome), NOTICE_MS);
 	}
 
 	/** Loads persisted settings, falling back to defaults. */

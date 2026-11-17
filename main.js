@@ -20,7 +20,8 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
-  default: () => StickyDefaultsPlugin
+  default: () => StickyDefaultsPlugin,
+  describeOutcome: () => describeOutcome
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian2 = require("obsidian");
@@ -98,12 +99,6 @@ function labelPatch(label, defaults) {
 }
 
 // src/apply.ts
-var TICK_MS = 300;
-var FIRST_WAIT_MS = 350;
-var RETRY_GAP_MS = 600;
-var MAX_ATTEMPTS = 6;
-var PENDING_TTL_MS = 2e4;
-var VERIFY_MS = 1500;
 var EXCALIDRAW_PLUGIN_ID = "obsidian-excalidraw-plugin";
 function editingIds(state) {
   const editing = state == null ? void 0 : state.editingTextElement;
@@ -111,304 +106,117 @@ function editingIds(state) {
   const element = editing;
   return { id: element.id, containerId: element.containerId };
 }
-var StickyNoteFixer = class {
-  /**
-   * @param app - The Obsidian app.
-   * @param readDefaults - Current settings, read live so a dropdown takes
-   *   effect without restarting the poller.
-   * @param readDebug - Whether to log each fix to the console.
-   */
-  constructor(app, readDefaults, readDebug = () => false) {
-    this.app = app;
-    this.readDefaults = readDefaults;
-    this.readDebug = readDebug;
-    this.states = /* @__PURE__ */ new WeakMap();
-    /** Warned once when ExcalidrawAutomate could not be reached. */
-    this.warned = false;
+function isEditing(view, label) {
+  var _a, _b, _c, _d;
+  try {
+    if ((_b = (_a = view.containerEl) == null ? void 0 : _a.querySelector) == null ? void 0 : _b.call(_a, "textarea")) return true;
+  } catch (e) {
   }
-  /**
-   * One poll: look for sticky notes that do not match the defaults yet.
-   *
-   * Runs on every tick rather than only on scene changes, because a patch that
-   * the text editor then overwrote leaves the scene version settled at a value
-   * that no longer changes -- waiting for another change would never retry it.
-   * The version check is kept only as a cheap idle short-circuit.
-   */
-  tick() {
-    const defaults = this.readDefaults();
-    if (isNoop(defaults)) return;
-    for (const view of this.views()) {
-      const api = view.excalidrawAPI;
-      if (!(api == null ? void 0 : api.getSceneElements)) continue;
-      const elements = api.getSceneElements();
-      if (!Array.isArray(elements)) continue;
-      const version = this.sceneVersion(view, elements);
-      let state = this.states.get(view);
-      if (!state) {
-        state = {
-          version,
-          seen: this.noteIds(elements),
-          pending: /* @__PURE__ */ new Map()
-        };
-        this.states.set(view, state);
+  let state;
+  try {
+    state = (_d = (_c = view.excalidrawAPI) == null ? void 0 : _c.getAppState) == null ? void 0 : _d.call(_c);
+  } catch (e) {
+    return false;
+  }
+  const { id, containerId } = editingIds(state);
+  if (id === void 0 && containerId === void 0) return false;
+  return id === label.id || containerId === label.id;
+}
+function acquireAutomate(app, view) {
+  var _a, _b;
+  const registry = app.plugins;
+  const plugin = (_a = registry == null ? void 0 : registry.plugins) == null ? void 0 : _a[EXCALIDRAW_PLUGIN_ID];
+  const factory = plugin == null ? void 0 : plugin.ea;
+  if (!factory || typeof factory.getAPI !== "function") return null;
+  try {
+    return (_b = factory.getAPI(view)) != null ? _b : null;
+  } catch (e) {
+    return null;
+  }
+}
+async function writePatches(app, view, elements, patches) {
+  var _a;
+  const ea = acquireAutomate(app, view);
+  if (!ea) return false;
+  try {
+    const targets = patches.map((entry) => elements.find((el) => el.id === entry.labelId)).filter((el) => el !== void 0);
+    if (targets.length === 0) return false;
+    ea.copyViewElementsToEAforEditing(targets);
+    for (const entry of patches) {
+      const target = ea.getElement(entry.labelId);
+      if (!target) continue;
+      if (entry.patch.fontFamily !== void 0) {
+        target.fontFamily = entry.patch.fontFamily;
+      }
+      if (entry.patch.fontSize !== void 0) {
+        target.fontSize = entry.patch.fontSize;
+      }
+      if (entry.patch.textAlign !== void 0) {
+        target.textAlign = entry.patch.textAlign;
+      }
+      if (entry.patch.verticalAlign !== void 0) {
+        target.verticalAlign = entry.patch.verticalAlign;
+      }
+    }
+    return await ea.addElementsToView(false, true, false, false, "NEVER");
+  } catch (error) {
+    console.error("[excalidraw-sticky-defaults] 写入便签 label 失败", error);
+    return false;
+  } finally {
+    (_a = ea.destroy) == null ? void 0 : _a.call(ea);
+  }
+}
+async function applyStickyDefaults(app, defaults, debug = false) {
+  var _a, _b;
+  const outcome = {
+    notes: 0,
+    changed: 0,
+    editing: 0,
+    noLabel: 0,
+    failed: 0,
+    noAutomate: false
+  };
+  if (isNoop(defaults)) return outcome;
+  for (const leaf of app.workspace.getLeavesOfType("excalidraw")) {
+    const view = leaf.view;
+    const elements = (_b = (_a = view == null ? void 0 : view.excalidrawAPI) == null ? void 0 : _a.getSceneElements) == null ? void 0 : _b.call(_a);
+    if (!view || !Array.isArray(elements)) continue;
+    const patches = [];
+    for (const element of elements) {
+      if (!isStickyNote(element)) continue;
+      outcome.notes += 1;
+      const label = boundLabelOf(element, elements);
+      if (!label || typeof label.id !== "string") {
+        outcome.noLabel += 1;
         continue;
       }
-      if (version === state.version && state.pending.size === 0) continue;
-      state.version = version;
-      void this.reconcile(
-        view,
-        elements,
-        state,
-        defaults,
-        false
-      );
-    }
-  }
-  /**
-   * Applies the defaults to every sticky note in every open drawing.
-   *
-   * Used by the command of the same name: unlike {@link tick} this ignores the
-   * "new only" rule, but still leaves a note alone while a text editor is open.
-   *
-   * @returns How many labels were rewritten.
-   */
-  async applyToExisting() {
-    var _a, _b, _c;
-    const defaults = this.readDefaults();
-    if (isNoop(defaults)) return 0;
-    let changed = 0;
-    for (const view of this.views()) {
-      const elements = (_b = (_a = view.excalidrawAPI) == null ? void 0 : _a.getSceneElements) == null ? void 0 : _b.call(_a);
-      if (!Array.isArray(elements)) continue;
-      const state = (_c = this.states.get(view)) != null ? _c : {
-        version: -1,
-        seen: /* @__PURE__ */ new Set(),
-        pending: /* @__PURE__ */ new Map()
-      };
-      this.states.set(view, state);
-      changed += await this.reconcile(
-        view,
-        elements,
-        state,
-        defaults,
-        true
-      );
-    }
-    return changed;
-  }
-  /** Open Excalidraw views, in workspace order. */
-  views() {
-    const leaves = this.app.workspace.getLeavesOfType("excalidraw");
-    const views = [];
-    for (const leaf of leaves) {
-      if (leaf.view) views.push(leaf.view);
-    }
-    return views;
-  }
-  /** Ids of every sticky note in a scene. */
-  noteIds(elements) {
-    const ids = /* @__PURE__ */ new Set();
-    for (const element of elements) {
-      if (isStickyNote(element) && typeof element.id === "string") {
-        ids.add(element.id);
-      }
-    }
-    return ids;
-  }
-  /** A cheap change detector for one drawing. */
-  sceneVersion(view, elements) {
-    if (typeof view.getSceneVersion === "function") {
-      try {
-        return view.getSceneVersion(elements);
-      } catch (e) {
-      }
-    }
-    return elements.length;
-  }
-  /** Retires a note: it matches the defaults, or we have stopped trying. */
-  retire(state, noteId) {
-    state.seen.add(noteId);
-    state.pending.delete(noteId);
-  }
-  /**
-   * Rewrites the labels that need it.
-   *
-   * @param view - The drawing.
-   * @param elements - Its scene.
-   * @param state - Per-drawing bookkeeping.
-   * @param defaults - What to force.
-   * @param force - Ignore the "already seen" list and the retry delays.
-   * @returns How many labels were rewritten.
-   */
-  async reconcile(view, elements, state, defaults, force) {
-    const now = Date.now();
-    const patches = [];
-    let gaveUp = 0;
-    for (const note of elements) {
-      if (!isStickyNote(note) || typeof note.id !== "string") continue;
-      if (!force && state.seen.has(note.id)) continue;
-      const label = boundLabelOf(note, elements);
-      if (!label || typeof label.id !== "string") {
-        this.retire(state, note.id);
+      if (isEditing(view, label)) {
+        outcome.editing += 1;
         continue;
       }
       const patch = labelPatch(label, defaults);
-      if (!patch) {
-        const pending = state.pending.get(note.id);
-        if (pending && pending.verifyUntil > now) continue;
-        this.retire(state, note.id);
-        continue;
-      }
-      if (!force) {
-        const pending = state.pending.get(note.id);
-        if (!pending) {
-          state.pending.set(note.id, {
-            deadline: now + PENDING_TTL_MS,
-            attempts: 0,
-            nextTry: now + FIRST_WAIT_MS,
-            verifyUntil: 0
-          });
-          continue;
-        }
-        if (now < pending.nextTry) continue;
-        if (now > pending.deadline || pending.attempts >= MAX_ATTEMPTS) {
-          this.retire(state, note.id);
-          gaveUp += 1;
-          continue;
-        }
-        if (this.isEditing(view, label)) {
-          pending.nextTry = now + RETRY_GAP_MS / 2;
-          continue;
-        }
-        pending.attempts += 1;
-        pending.nextTry = now + RETRY_GAP_MS;
-      }
-      patches.push({ noteId: note.id, labelId: label.id, patch });
+      if (patch) patches.push({ labelId: label.id, patch });
     }
-    if (gaveUp > 0) {
-      console.warn(
-        `[excalidraw-sticky-defaults] 有 ${gaveUp} 个便签在 ${MAX_ATTEMPTS} 次尝试后仍未改成默认样式，已跳过。`
-      );
-    }
-    if (patches.length === 0) return 0;
-    const ok = await this.write(
-      view,
-      elements,
-      patches.map((entry) => ({ labelId: entry.labelId, patch: entry.patch }))
-    );
-    if (!ok) return 0;
-    for (const entry of patches) {
-      const pending = state.pending.get(entry.noteId);
-      if (pending) pending.verifyUntil = Date.now() + VERIFY_MS;
-    }
-    if (this.readDebug()) {
-      for (const entry of patches) {
-        console.log(
-          "[excalidraw-sticky-defaults] 已改写便签",
-          entry.noteId,
-          entry.patch
-        );
-      }
-    }
-    return patches.length;
-  }
-  /**
-   * Whether a text editor is open, so writing would fight the user.
-   *
-   * Three signals, cheapest first. The `textarea` check is blunt -- it reacts to
-   * *any* open text editor in the view, not just this note's -- but it is the
-   * one that does not depend on an internal appState key, and a false positive
-   * only delays the fix by a tick.
-   *
-   * @param view - The drawing.
-   * @param label - The label about to be written.
-   */
-  isEditing(view, label) {
-    var _a, _b, _c, _d;
-    try {
-      if ((_b = (_a = view.containerEl) == null ? void 0 : _a.querySelector) == null ? void 0 : _b.call(_a, "textarea")) return true;
-    } catch (e) {
-    }
-    let state;
-    try {
-      state = (_d = (_c = view.excalidrawAPI) == null ? void 0 : _c.getAppState) == null ? void 0 : _d.call(_c);
-    } catch (e) {
-      return false;
-    }
-    const { id, containerId } = editingIds(state);
-    if (id === void 0 && containerId === void 0) return false;
-    return id === label.id || containerId === label.id;
-  }
-  /**
-   * Commits the patches through ExcalidrawAutomate.
-   *
-   * The same route the Excalidraw plugin uses for its own element edits: copy
-   * the scene elements onto a workbench, mutate the copies, then let
-   * `addElementsToView()` merge them back with proper version bumps and
-   * redrawing. `"NEVER"` is passed as the capture action so an automatic,
-   * cosmetic fix does not land on the undo stack.
-   *
-   * @returns True when the elements were committed.
-   */
-  async write(view, elements, patches) {
-    var _a;
-    const ea = this.acquireAutomate(view);
-    if (!ea) {
-      if (!this.warned) {
-        this.warned = true;
-        console.warn(
-          "[excalidraw-sticky-defaults] 取不到 ExcalidrawAutomate，便签默认设置未生效。请确认 Excalidraw 插件已启用且是最新版本。"
-        );
-      }
-      return false;
-    }
-    try {
-      const targets = patches.map((entry) => elements.find((el) => el.id === entry.labelId)).filter((el) => el !== void 0);
-      if (targets.length === 0) return false;
-      ea.copyViewElementsToEAforEditing(targets);
-      for (const entry of patches) {
-        const target = ea.getElement(entry.labelId);
-        if (!target) continue;
-        if (entry.patch.fontFamily !== void 0) {
-          target.fontFamily = entry.patch.fontFamily;
-        }
-        if (entry.patch.fontSize !== void 0) {
-          target.fontSize = entry.patch.fontSize;
-        }
-        if (entry.patch.textAlign !== void 0) {
-          target.textAlign = entry.patch.textAlign;
-        }
-        if (entry.patch.verticalAlign !== void 0) {
-          target.verticalAlign = entry.patch.verticalAlign;
+    if (patches.length === 0) continue;
+    const ok = await writePatches(app, view, elements, patches);
+    if (ok) {
+      outcome.changed += patches.length;
+      if (debug) {
+        for (const entry of patches) {
+          console.log(
+            "[excalidraw-sticky-defaults] 已改写便签",
+            entry.labelId,
+            entry.patch
+          );
         }
       }
-      return await ea.addElementsToView(false, true, false, false, "NEVER");
-    } catch (error) {
-      console.error("[excalidraw-sticky-defaults] 写入便签label失败", error);
-      return false;
-    } finally {
-      (_a = ea.destroy) == null ? void 0 : _a.call(ea);
+    } else {
+      outcome.failed += 1;
+      if (!acquireAutomate(app, view)) outcome.noAutomate = true;
     }
   }
-  /**
-   * Mints an ExcalidrawAutomate bound to one view.
-   *
-   * `getAPI(view)` is Excalidraw's own factory, so the instance belongs to this
-   * view and cannot disturb `window.ExcalidrawAutomate` or another drawing.
-   */
-  acquireAutomate(view) {
-    var _a, _b;
-    const registry = this.app.plugins;
-    const plugin = (_a = registry == null ? void 0 : registry.plugins) == null ? void 0 : _a[EXCALIDRAW_PLUGIN_ID];
-    const factory = plugin == null ? void 0 : plugin.ea;
-    if (!factory || typeof factory.getAPI !== "function") return null;
-    try {
-      return (_b = factory.getAPI(view)) != null ? _b : null;
-    } catch (e) {
-      return null;
-    }
-  }
-};
+  return outcome;
+}
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -468,7 +276,7 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian.Setting(containerEl).setName("启用").setDesc(
-      "新建便签后自动套用下面各项。已有便签不受影响 —— 要一次性套用到当前图纸，用最下面的按钮或同名命令。"
+      "总开关。关掉后点「立即套用」会提示你先启用。注意：本插件**不自动监听**新便签 —— 每次都需要你点一下。"
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enabled).onChange(async (value) => {
         this.plugin.settings.enabled = value;
@@ -476,7 +284,7 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     new import_obsidian.Setting(containerEl).setName("便签默认字体").setDesc(
-      "只在**新建**便签时套用。「不修改」保持 Excalidraw 自己的行为。注意：这些是 Excalidraw 内置字体，都不含中文字形，中文会回退到系统字体。"
+      "点「立即套用」时写进便签的文字。「不修改」保持 Excalidraw 自己的行为。注意：这些是 Excalidraw 内置字体，都不含中文字形，中文会回退到系统字体。"
     ).addDropdown((dropdown) => {
       dropdown.addOption("0", "不修改");
       for (const option of FONT_OPTIONS) {
@@ -526,11 +334,11 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("套用到当前图纸的已有便签").setDesc(
-      "把上面各项立即套用到所有已打开的 Excalidraw 图纸里现存的便签。正在编辑的便签会跳过，点一下空白处再点一次即可。"
+    new import_obsidian.Setting(containerEl).setName("套用到已打开的图纸").setDesc(
+      "**这是唯一的触发方式**（不再自动监听）。点一次就把上面各项套用到所有已打开 Excalidraw 图纸里的便签，并在右上角提示改了几个。左侧丝带栏的便签图标、命令面板的「套用便签默认设置」效果相同。正在编辑的便签会跳过 —— 点一下画布空白处再点一次即可。"
     ).addButton(
-      (button) => button.setButtonText("套用").onClick(async () => {
-        await this.plugin.applyToOpenDrawings(true);
+      (button) => button.setButtonText("立即套用").setCta().onClick(async () => {
+        await this.plugin.applyNow();
       })
     );
     new import_obsidian.Setting(containerEl).setName("调试日志").setDesc(
@@ -545,55 +353,74 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
 };
 
 // src/main.ts
-var NO_DEFAULTS = {
-  fontFamily: null,
-  fontSize: null,
-  textAlign: null,
-  verticalAlign: null
-};
+var RIBBON_ICON = "sticky-note";
+var NOTICE_MS = 8e3;
+function describeOutcome(outcome) {
+  if (outcome.noAutomate) {
+    return "取不到 ExcalidrawAutomate：请确认 Excalidraw 插件已启用并与 Obsidian 版本匹配。";
+  }
+  if (outcome.notes === 0) {
+    return "没有找到便签：请先打开一张含便签的 Excalidraw 图纸，再点这个按钮。";
+  }
+  const parts = [];
+  if (outcome.changed > 0) {
+    parts.push(`已改写 ${outcome.changed} 个便签`);
+  } else {
+    parts.push("没有需要改写的便签（已经是目标样式）");
+  }
+  if (outcome.editing > 0) {
+    parts.push(`跳过 ${outcome.editing} 个正在编辑的（点一下画布空白处再点一次）`);
+  }
+  if (outcome.noLabel > 0) {
+    parts.push(`${outcome.noLabel} 个找不到文字元素`);
+  }
+  if (outcome.failed > 0) {
+    parts.push(`${outcome.failed} 张图纸写入失败（详见控制台）`);
+  }
+  return `${parts.join("；")}（共发现 ${outcome.notes} 个便签）`;
+}
 var StickyDefaultsPlugin = class extends import_obsidian2.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
-    /** Watches drawings and rewrites new sticky notes. */
-    this.fixer = null;
   }
   async onload() {
     await this.loadSettings();
-    this.fixer = new StickyNoteFixer(
-      this.app,
-      () => this.settings.enabled ? toStickyDefaults(this.settings) : NO_DEFAULTS,
-      () => this.settings.debugLog
-    );
     this.addSettingTab(new StickyDefaultsSettingTab(this.app, this));
-    this.registerInterval(
-      window.setInterval(() => {
-        var _a;
-        return void ((_a = this.fixer) == null ? void 0 : _a.tick());
-      }, TICK_MS)
-    );
+    this.addRibbonIcon(RIBBON_ICON, "套用便签默认设置", () => {
+      void this.applyNow();
+    });
     this.addCommand({
-      id: "apply-to-open-drawings",
-      name: "把便签默认设置套用到已打开的图纸",
-      callback: () => void this.applyToOpenDrawings(false)
+      id: "apply-sticky-defaults",
+      name: "套用便签默认设置（所有已打开的图纸）",
+      callback: () => void this.applyNow()
     });
   }
   /**
-   * Applies the defaults to the notes that already exist.
+   * Runs the rewrite and reports the result.
    *
-   * @param fromSettingsTab - Whether to confirm in a notice; the command already
-   *   produces its own feedback, and a silent button would be a mystery.
+   * The same notice is shown whether it was triggered from the ribbon, the
+   * command or the settings tab: the outcome is what matters, not the entry
+   * point.
    */
-  async applyToOpenDrawings(fromSettingsTab) {
-    var _a, _b;
+  async applyNow() {
     if (!this.settings.enabled) {
-      new import_obsidian2.Notice("便签默认设置已关闭，先打开「启用」。");
+      new import_obsidian2.Notice("便签默认设置已关闭：先在上面打开「启用」。");
       return;
     }
-    const changed = (_b = await ((_a = this.fixer) == null ? void 0 : _a.applyToExisting())) != null ? _b : 0;
-    new import_obsidian2.Notice(
-      changed > 0 ? `已改写 ${changed} 个便签的文字样式。` : fromSettingsTab ? "没有需要改写的便签（可能正在编辑中，点一下画布空白处再试）。" : "没有需要改写的便签。"
+    const defaults = toStickyDefaults(this.settings);
+    if (isNoop(defaults)) {
+      new import_obsidian2.Notice(
+        "字体、字号、水平对齐、垂直对齐全都是「不修改」，没有可套用的内容。"
+      );
+      return;
+    }
+    const outcome = await applyStickyDefaults(
+      this.app,
+      defaults,
+      this.settings.debugLog
     );
+    new import_obsidian2.Notice(describeOutcome(outcome), NOTICE_MS);
   }
   /** Loads persisted settings, falling back to defaults. */
   async loadSettings() {

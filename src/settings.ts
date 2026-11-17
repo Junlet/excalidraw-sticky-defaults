@@ -156,8 +156,8 @@ export class StickyDefaultsSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("启用")
 			.setDesc(
-				"新建便签后自动套用下面各项。已有便签不受影响 —— " +
-					"要一次性套用到当前图纸，用最下面的按钮或同名命令。"
+				"总开关。关掉后点「立即套用」会提示你先启用。" +
+					"注意：本插件**不自动监听**新便签 —— 每次都需要你点一下。"
 			)
 			.addToggle((toggle) =>
 				toggle
@@ -171,7 +171,7 @@ export class StickyDefaultsSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("便签默认字体")
 			.setDesc(
-				"只在**新建**便签时套用。「不修改」保持 Excalidraw 自己的行为。" +
+				"点「立即套用」时写进便签的文字。「不修改」保持 Excalidraw 自己的行为。" +
 					"注意：这些是 Excalidraw 内置字体，都不含中文字形，" +
 					"中文会回退到系统字体。"
 			)
@@ -260,16 +260,19 @@ export class StickyDefaultsSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("套用到当前图纸的已有便签")
+			.setName("套用到已打开的图纸")
 			.setDesc(
-				"把上面各项立即套用到所有已打开的 Excalidraw 图纸里现存的便签。" +
-					"正在编辑的便签会跳过，点一下空白处再点一次即可。"
+				"**这是唯一的触发方式**（不再自动监听）。点一次就把上面各项套用到" +
+					"所有已打开 Excalidraw 图纸里的便签，并在右上角提示改了几个。" +
+					"左侧丝带栏的便签图标、命令面板的「套用便签默认设置」效果相同。" +
+					"正在编辑的便签会跳过 —— 点一下画布空白处再点一次即可。"
 			)
 			.addButton((button) =>
 				button
-					.setButtonText("套用")
+					.setButtonText("立即套用")
+					.setCta()
 					.onClick(async () => {
-						await this.plugin.applyToOpenDrawings(true);
+						await this.plugin.applyNow();
 					})
 			);
 
