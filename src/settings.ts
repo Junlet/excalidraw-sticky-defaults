@@ -328,11 +328,12 @@ export class StickyDefaultsSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("在 Excalidraw 脚本库里装一个按钮")
+			.setName("在 Excalidraw 脚本库里装按钮")
 			.setDesc(
-				"把配套脚本写进**本库**的 Excalidraw 脚本目录（目录路径取自 Excalidraw 设置），" +
-					"之后就能在画布的脚本库里直接点它。**换库时也点一下这里** —— " +
-					"插件能通过 BRAT 自动装过去，但脚本是库里的文件，不会跟着走。" +
+				"把配套脚本写进**本库**的 Excalidraw 脚本目录（路径取自 Excalidraw 设置），" +
+					"之后就能在画布的脚本库里直接点。目前两个脚本：" +
+					"**套用便签默认设置**、**在新标签页打开选中元素的链接**（后者不依赖本插件）。" +
+					"**换库时也点一下这里** —— 插件能通过 BRAT 自动装过去，但脚本是库里的文件，不会跟着走。" +
 					"不会覆盖你自己写的同名脚本。"
 			)
 			.addButton((button) =>

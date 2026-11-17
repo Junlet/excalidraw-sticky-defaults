@@ -263,12 +263,10 @@ async function applyStickyDefaults(app, defaults, options = {}) {
 }
 
 // src/script-installer.ts
-var SCRIPT_FILE_NAME = "套用便签默认设置.md";
-var ICON_FILE_NAME = "套用便签默认设置.svg";
 var MANAGED_MARKER = "managed-by: excalidraw-sticky-defaults";
 var ICON_MARKER = `<!-- ${MANAGED_MARKER} -->`;
 var DEFAULT_SCRIPT_FOLDER = "Excalidraw/Scripts";
-var SCRIPT_CONTENT = `/*
+var STICKY_SCRIPT_CONTENT = `/*
 # 套用便签默认设置
 
 把 Excalidraw 便签的**字体 / 字号上限 / 水平对齐 / 垂直对齐**一键改成你在设置里定的值（可以只改选中的便签）。
@@ -311,13 +309,147 @@ if (!plugin || typeof plugin.applyNow !== "function") {
 
 await plugin.applyNow();
 `;
-var SCRIPT_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none">
+var STICKY_SCRIPT_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none">
 ${ICON_MARKER}
 <path d="M9 5h22a4 4 0 0 1 4 4v15l-9 9H9a4 4 0 0 1-4-4V9a4 4 0 0 1 4-4Z" fill="#F3F1FF" stroke="#6965DB" stroke-width="2.2" stroke-linejoin="round"/>
 <path d="M26 33v-6a3 3 0 0 1 3-3h6" fill="#DDD8FF" stroke="#6965DB" stroke-width="2.2" stroke-linejoin="round"/>
 <path d="M11 13h16M11 19h16M11 25h9" stroke="#6965DB" stroke-width="2.2" stroke-linecap="round"/>
 </svg>
 `;
+var OPEN_LINK_SCRIPT_CONTENT = `/*
+# 在新标签页打开选中元素的链接
+
+选中画布上的元素，把它们的链接/文件**在新标签页打开**。
+
+- 选中**图片** → 打开这张图片
+- 选中**插入到当前图纸的其它 Excalidraw** → 打开那个图纸
+- 选中**带链接的文字/形状** → 打开链接（站内文件或外部网址都行）
+- 多选 → 全部打开，重复的只开一次
+
+## 用法
+
+1. 在画布上选中一个或多个元素
+2. 运行本脚本（脚本库 / 命令面板 / 快捷键）
+3. 结果会以右上角提示告诉你开了几个、有几个元素没有链接
+
+## 说明
+
+- 站内文件走 Obsidian 的链接解析，相对路径按**当前图纸**的位置解析
+- 外部网址（\`http(s)://\`）用浏览器新标签页打开
+- 优先读元素自己的 \`link\` 字段；图片若没有 \`link\`，就从 Excalidraw 插件的图片登记表里取它对应的文件
+- 不依赖任何其它插件
+- ${MANAGED_MARKER}（这一行由插件写入，用于判断文件归属；删除它不会影响脚本运行）
+*/
+
+const selected = ea.getViewSelectedElements();
+
+if (!selected || selected.length === 0) {
+	new Notice("先选中要打开的元素（图片、嵌入的 Excalidraw、带链接的文字或形状）。");
+	return;
+}
+
+const view = ea.targetView;
+const sourcePath = view?.file?.path ?? "";
+const obsidian = window.app;
+
+/** 元素 → 目标（站内路径或网址），拿不到就返回 null。 */
+function resolveTarget(element) {
+	const link = typeof element.link === "string" ? element.link.trim() : "";
+	if (link) return link;
+
+	// 图片：Excalidraw 插件把对应的库内文件登记在图片表里
+	if (element.type === "image") {
+		try {
+			const entry = view?.excalidrawData?.getFile?.(element.fileId);
+			if (entry?.isHyperLink && entry.hyperlink) return entry.hyperlink;
+			if (entry?.file?.path) return entry.file.path;
+		} catch (error) {
+			console.warn("[打开选中元素的链接] 读取图片登记失败", error);
+		}
+	}
+
+	return null;
+}
+
+/** 去掉 [[ ]] / ![[ ]] 包裹、别名与尺寸后缀，得到 Obsidian 能解析的链接文本。 */
+function normalize(target) {
+	let text = target.trim();
+	const isUrl = /^https?:\\/\\//i.test(text);
+	if (isUrl) return text;
+	text = text.replace(/^!?\\[\\[/, "").replace(/\\]\\]$/, "");
+	text = text.split("|")[0].trim();
+	return text;
+}
+
+const targets = [];
+const seen = new Set();
+let withoutLink = 0;
+
+for (const element of selected) {
+	const raw = resolveTarget(element);
+	if (!raw) {
+		withoutLink += 1;
+		continue;
+	}
+	const target = normalize(raw);
+	if (!target) {
+		withoutLink += 1;
+		continue;
+	}
+	if (seen.has(target)) continue;
+	seen.add(target);
+	targets.push(target);
+}
+
+if (targets.length === 0) {
+	new Notice(
+		"选中的 " + selected.length + " 个元素里没有可打开的链接。"
+	);
+	return;
+}
+
+let opened = 0;
+for (const target of targets) {
+	try {
+		if (/^https?:\\/\\//i.test(target)) {
+			window.open(target, "_blank");
+		} else {
+			await obsidian.workspace.openLinkText(target, sourcePath, true);
+		}
+		opened += 1;
+	} catch (error) {
+		console.error("[打开选中元素的链接] 打开失败", target, error);
+	}
+}
+
+const parts = ["已在新标签页打开 " + opened + " 个链接"];
+if (targets.length > opened) parts.push((targets.length - opened) + " 个打开失败（详见控制台）");
+if (withoutLink > 0) parts.push(withoutLink + " 个元素没有链接");
+new Notice(parts.join("；") + "。");
+`;
+var OPEN_LINK_SCRIPT_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none">
+${ICON_MARKER}
+<rect x="5.5" y="13.5" width="20" height="20" rx="3.5" fill="#F3F1FF" stroke="#6965DB" stroke-width="2.2"/>
+<path d="M22 6h12v12" stroke="#6965DB" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M34 6 20 20" stroke="#6965DB" stroke-width="2.2" stroke-linecap="round"/>
+</svg>
+`;
+var BUNDLED_SCRIPTS = [
+  {
+    label: "套用便签默认设置",
+    fileName: "套用便签默认设置.md",
+    content: STICKY_SCRIPT_CONTENT,
+    iconFileName: "套用便签默认设置.svg",
+    icon: STICKY_SCRIPT_ICON
+  },
+  {
+    label: "在新标签页打开选中元素的链接",
+    fileName: "在新标签页打开选中元素的链接.md",
+    content: OPEN_LINK_SCRIPT_CONTENT,
+    iconFileName: "在新标签页打开选中元素的链接.svg",
+    icon: OPEN_LINK_SCRIPT_ICON
+  }
+];
 function resolveScriptFolder(app) {
   var _a, _b;
   const registry = app.plugins;
@@ -352,40 +484,55 @@ async function ensureFile(vault, path, content, marker) {
   await vault.modify(existing, content);
   return "updated";
 }
-async function installScript(app) {
+async function installScripts(app) {
   const vault = app.vault;
   if (!vault || typeof vault.create !== "function") {
-    return { status: "error", path: "", reason: "拿不到 vault 接口" };
+    return { entries: [], error: "拿不到 vault 接口" };
   }
   const folder = resolveScriptFolder(app);
-  const path = joinPath(folder, SCRIPT_FILE_NAME);
-  const iconPath = joinPath(folder, ICON_FILE_NAME);
   try {
     await ensureFolder(vault, folder);
-    const status = await ensureFile(
-      vault,
-      path,
-      SCRIPT_CONTENT,
-      MANAGED_MARKER
-    );
-    if (status === "conflict") return { status, path };
-    let icon = "conflict";
-    try {
-      icon = await ensureFile(vault, iconPath, SCRIPT_ICON_SVG, ICON_MARKER);
-    } catch (iconError) {
-      console.warn(
-        "[excalidraw-sticky-defaults] 写入脚本图标失败（不影响脚本运行）",
-        iconError
-      );
-    }
-    return { status, path, icon };
   } catch (error) {
     return {
-      status: "error",
-      path,
-      reason: error instanceof Error ? error.message : String(error)
+      entries: [],
+      error: error instanceof Error ? error.message : String(error)
     };
   }
+  const entries = [];
+  for (const script of BUNDLED_SCRIPTS) {
+    const path = joinPath(folder, script.fileName);
+    try {
+      const status = await ensureFile(
+        vault,
+        path,
+        script.content,
+        MANAGED_MARKER
+      );
+      let icon = "conflict";
+      if (status !== "conflict") {
+        try {
+          icon = await ensureFile(
+            vault,
+            joinPath(folder, script.iconFileName),
+            script.icon,
+            ICON_MARKER
+          );
+        } catch (iconError) {
+          console.warn(
+            "[excalidraw-sticky-defaults] 写入脚本图标失败（不影响脚本运行）",
+            iconError
+          );
+        }
+      }
+      entries.push({ label: script.label, status, icon, path });
+    } catch (error) {
+      return {
+        entries,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+  return { entries };
 }
 
 // src/settings.ts
@@ -537,8 +684,8 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("在 Excalidraw 脚本库里装一个按钮").setDesc(
-      "把配套脚本写进**本库**的 Excalidraw 脚本目录（目录路径取自 Excalidraw 设置），之后就能在画布的脚本库里直接点它。**换库时也点一下这里** —— 插件能通过 BRAT 自动装过去，但脚本是库里的文件，不会跟着走。不会覆盖你自己写的同名脚本。"
+    new import_obsidian.Setting(containerEl).setName("在 Excalidraw 脚本库里装按钮").setDesc(
+      "把配套脚本写进**本库**的 Excalidraw 脚本目录（路径取自 Excalidraw 设置），之后就能在画布的脚本库里直接点。目前两个脚本：**套用便签默认设置**、**在新标签页打开选中元素的链接**（后者不依赖本插件）。**换库时也点一下这里** —— 插件能通过 BRAT 自动装过去，但脚本是库里的文件，不会跟着走。不会覆盖你自己写的同名脚本。"
     ).addButton(
       (button) => button.setButtonText("安装 / 更新脚本").onClick(async () => {
         await this.plugin.installCompanionScript();
@@ -581,31 +728,30 @@ function describeOutcome(outcome) {
   }
   return `${parts.join(" · ")}（共发现 ${outcome.notes} 个便签）`;
 }
-function iconNote(icon) {
-  switch (icon) {
-    case "created":
-      return "（同时写入了图标）";
-    case "updated":
-      return "（图标已更新）";
-    case "present":
-      return "";
-    default:
-      return "（同名图标不是你生成的，未覆盖）";
+function describeInstall(report) {
+  if (report.error) return `安装脚本失败：${report.error}`;
+  if (report.entries.length === 0) return "没有可安装的脚本。";
+  const count = (status) => report.entries.filter((entry) => entry.status === status).length;
+  const created = count("created");
+  const updated = count("updated");
+  const present = count("present");
+  const conflicts = report.entries.filter((entry) => entry.status === "conflict");
+  const icons = report.entries.filter(
+    (entry) => entry.icon === "created" || entry.icon === "updated"
+  ).length;
+  if (created === 0 && updated === 0 && conflicts.length === 0) {
+    return `脚本已是最新，无需重复安装（${present} 个）${icons > 0 ? "，图标已补上" : ""}。`;
   }
-}
-function describeInstall(result) {
-  switch (result.status) {
-    case "created":
-      return `已安装脚本${iconNote(result.icon)}：${result.path}（在 Excalidraw 脚本库里即可看到）`;
-    case "updated":
-      return `已更新脚本${iconNote(result.icon)}：${result.path}`;
-    case "present":
-      return `脚本已是最新，无需重复安装${iconNote(result.icon)}：${result.path}`;
-    case "conflict":
-      return `已存在同名脚本但内容不同，未覆盖：${result.path}。如需用插件版，请先改名或删除它。`;
-    default:
-      return `安装脚本失败：${result.reason}（目标：${result.path}）`;
+  const parts = [];
+  if (created > 0) parts.push(`新增 ${created}`);
+  if (updated > 0) parts.push(`更新 ${updated}`);
+  if (present > 0) parts.push(`已是最新 ${present}`);
+  let message = `共 ${report.entries.length} 个脚本：${parts.join("、")}`;
+  if (icons > 0) message += `（写入 ${icons} 个图标）`;
+  if (conflicts.length > 0) {
+    message += `；未覆盖同名文件：${conflicts.map((entry) => entry.label).join("、")}（如需用插件版，请先改名或删除）`;
   }
+  return message;
 }
 var StickyDefaultsPlugin = class extends import_obsidian2.Plugin {
   constructor() {
@@ -630,16 +776,16 @@ var StickyDefaultsPlugin = class extends import_obsidian2.Plugin {
     });
   }
   /**
-   * Writes the companion script into this vault's Excalidraw script folder.
+   * Writes the bundled scripts into this vault's Excalidraw script folder.
    *
-   * This is how the script reaches another vault: BRAT installs the plugin, and
-   * one command here creates the script-library button next to it. The folder is
-   * read from Excalidraw's own settings, so a vault with a customised script
-   * path also gets it in the right place.
+   * This is how the scripts reach another vault: BRAT installs the plugin, and
+   * one command here creates the script-library buttons next to it. The folder
+   * is read from Excalidraw's own settings, so a vault with a customised script
+   * path also gets them in the right place.
    */
   async installCompanionScript() {
-    const result = await installScript(this.app);
-    new import_obsidian2.Notice(describeInstall(result), NOTICE_MS);
+    const report = await installScripts(this.app);
+    new import_obsidian2.Notice(describeInstall(report), NOTICE_MS);
   }
   /**
    * Runs the rewrite and reports the result.

@@ -30,7 +30,10 @@
 import { Notice, Plugin } from "obsidian";
 import { applyStickyDefaults, type ApplyOutcome } from "./apply";
 import { isNoop } from "./defaults";
-import { installScript, type InstallResult } from "./script-installer";
+import {
+	installScripts,
+	type InstallReport,
+} from "./script-installer";
 import {
 	DEFAULT_SETTINGS,
 	StickyDefaultsSettingTab,
@@ -99,42 +102,47 @@ export function describeOutcome(outcome: ApplyOutcome): string {
 	return `${parts.join(" · ")}（共发现 ${outcome.notes} 个便签）`;
 }
 
-/** How the icon part of an install went, in words. */
-function iconNote(icon: "created" | "updated" | "present" | "conflict"): string {
-	switch (icon) {
-		case "created":
-			return "（同时写入了图标）";
-		case "updated":
-			return "（图标已更新）";
-		case "present":
-			return "";
-		default:
-			return "（同名图标不是你生成的，未覆盖）";
-	}
-}
-
 /**
- * Turns an install result into one sentence.
+ * Turns an install report into one sentence.
  *
  * The conflict case is the interesting one: the plugin refuses to overwrite a
- * file it did not write, and says so instead of silently replacing the user's
+ * file it did not write, and names it instead of silently replacing the user's
  * own script of the same name.
  *
- * @param result - What {@link installScript} did.
+ * @param report - What {@link installScripts} did.
  */
-export function describeInstall(result: InstallResult): string {
-	switch (result.status) {
-		case "created":
-			return `已安装脚本${iconNote(result.icon)}：${result.path}（在 Excalidraw 脚本库里即可看到）`;
-		case "updated":
-			return `已更新脚本${iconNote(result.icon)}：${result.path}`;
-		case "present":
-			return `脚本已是最新，无需重复安装${iconNote(result.icon)}：${result.path}`;
-		case "conflict":
-			return `已存在同名脚本但内容不同，未覆盖：${result.path}。如需用插件版，请先改名或删除它。`;
-		default:
-			return `安装脚本失败：${result.reason}（目标：${result.path}）`;
+export function describeInstall(report: InstallReport): string {
+	if (report.error) return `安装脚本失败：${report.error}`;
+	if (report.entries.length === 0) return "没有可安装的脚本。";
+
+	const count = (status: string): number =>
+		report.entries.filter((entry) => entry.status === status).length;
+	const created = count("created");
+	const updated = count("updated");
+	const present = count("present");
+	const conflicts = report.entries.filter((entry) => entry.status === "conflict");
+	const icons = report.entries.filter(
+		(entry) => entry.icon === "created" || entry.icon === "updated"
+	).length;
+
+	if (created === 0 && updated === 0 && conflicts.length === 0) {
+		return `脚本已是最新，无需重复安装（${present} 个）${
+			icons > 0 ? "，图标已补上" : ""
+		}。`;
 	}
+
+	const parts: string[] = [];
+	if (created > 0) parts.push(`新增 ${created}`);
+	if (updated > 0) parts.push(`更新 ${updated}`);
+	if (present > 0) parts.push(`已是最新 ${present}`);
+	let message = `共 ${report.entries.length} 个脚本：${parts.join("、")}`;
+	if (icons > 0) message += `（写入 ${icons} 个图标）`;
+	if (conflicts.length > 0) {
+		message += `；未覆盖同名文件：${conflicts
+			.map((entry) => entry.label)
+			.join("、")}（如需用插件版，请先改名或删除）`;
+	}
+	return message;
 }
 
 export default class StickyDefaultsPlugin extends Plugin {
@@ -164,16 +172,16 @@ export default class StickyDefaultsPlugin extends Plugin {
 	}
 
 	/**
-	 * Writes the companion script into this vault's Excalidraw script folder.
+	 * Writes the bundled scripts into this vault's Excalidraw script folder.
 	 *
-	 * This is how the script reaches another vault: BRAT installs the plugin, and
-	 * one command here creates the script-library button next to it. The folder is
-	 * read from Excalidraw's own settings, so a vault with a customised script
-	 * path also gets it in the right place.
+	 * This is how the scripts reach another vault: BRAT installs the plugin, and
+	 * one command here creates the script-library buttons next to it. The folder
+	 * is read from Excalidraw's own settings, so a vault with a customised script
+	 * path also gets them in the right place.
 	 */
 	async installCompanionScript(): Promise<void> {
-		const result = await installScript(this.app);
-		new Notice(describeInstall(result), NOTICE_MS);
+		const report = await installScripts(this.app);
+		new Notice(describeInstall(report), NOTICE_MS);
 	}
 
 	/**
