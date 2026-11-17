@@ -1,5 +1,5 @@
 /**
- * Installs the companion Excalidraw script into the current vault.
+ * Installs the companion Excalidraw script -- and its icon -- into this vault.
  *
  * WHY THIS EXISTS
  * ---------------
@@ -12,10 +12,17 @@
  * writes it into the folder Excalidraw actually scans -- read from Excalidraw's
  * own settings rather than assumed, because that path is configurable per vault.
  *
- * Safety rules, because this writes a file the user will see:
+ * THE ICON
+ * --------
+ * Excalidraw takes a script's icon from a **sibling file with the same name and
+ * an `.svg` extension** (`getIMGFilename(scriptPath, "svg")` in its script
+ * engine), reading the file's text as the icon markup. So the installer writes
+ * two files: the script and its icon.
+ *
+ * Safety rules, because this writes files the user will see:
  *   - nothing is written when an identical file is already there;
- *   - an existing file is only overwritten when it carries {@link MANAGED_MARKER},
- *     i.e. this plugin wrote it;
+ *   - an existing file is only overwritten when it carries the matching
+ *     `managed-by` marker, i.e. this plugin wrote it;
  *   - anything else is reported as a conflict and left untouched.
  */
 
@@ -25,13 +32,19 @@ import { EXCALIDRAW_PLUGIN_ID } from "./constants";
 /** The script's file name inside the script folder. */
 export const SCRIPT_FILE_NAME = "套用便签默认设置.md";
 
+/** The icon's file name: same stem as the script, `.svg` extension. */
+export const ICON_FILE_NAME = "套用便签默认设置.svg";
+
 /**
- * Marker proving this plugin owns the file.
+ * Marker proving this plugin owns the script file.
  *
  * Present in every script this module writes, so a later run can distinguish
  * "refresh our own file" from "the user has a file of the same name".
  */
 export const MANAGED_MARKER = "managed-by: excalidraw-sticky-defaults";
+
+/** The same marker in HTML-comment form, for the SVG icon. */
+export const ICON_MARKER = `<!-- ${MANAGED_MARKER} -->`;
 
 /** Fallback used when Excalidraw's own setting cannot be read. */
 export const DEFAULT_SCRIPT_FOLDER = "Excalidraw/Scripts";
@@ -45,7 +58,7 @@ export const DEFAULT_SCRIPT_FOLDER = "Excalidraw/Scripts";
 export const SCRIPT_CONTENT = `/*
 # 套用便签默认设置
 
-把 Excalidraw 便签的**字体 / 字号上限 / 水平对齐 / 垂直对齐**一键改成你在设置里定的值。
+把 Excalidraw 便签的**字体 / 字号上限 / 水平对齐 / 垂直对齐**一键改成你在设置里定的值（可以只改选中的便签）。
 
 本脚本**不含改写逻辑**，只是把 **Excalidraw Sticky Note Defaults** 插件的「立即套用」搬进脚本库，方便在画布里直接点。设置项、改写逻辑、结果提示都在那个插件里 —— 这样只有一份真相，不会两边不一致。
 
@@ -59,7 +72,9 @@ Excalidraw 会把便签文字**强制居中**，改它的默认对齐没用；�
 2. 或命令面板搜「套用便签默认设置」
 3. 或在插件设置页点「立即套用」
 
-三者效果完全相同。点完右上角会提示改写了几个便签。
+三者效果完全相同。点完右上角会提示改写了几个便签、用的是哪种范围。
+
+**只改选中的便签**：先在画布上选中它们再点。默认「自动」—— 选中了便签就只改选中的，没选中就改全部。
 
 ## 依赖
 
@@ -84,11 +99,31 @@ if (!plugin || typeof plugin.applyNow !== "function") {
 await plugin.applyNow();
 `;
 
-/** What {@link installScript} did. */
+/**
+ * The script's icon.
+ *
+ * A sticky note with a folded corner and three left-aligned lines -- the shape
+ * the button is about, in Excalidraw's own purple so it reads in both themes.
+ */
+export const SCRIPT_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none">
+${ICON_MARKER}
+<path d="M9 5h22a4 4 0 0 1 4 4v15l-9 9H9a4 4 0 0 1-4-4V9a4 4 0 0 1 4-4Z" fill="#F3F1FF" stroke="#6965DB" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M26 33v-6a3 3 0 0 1 3-3h6" fill="#DDD8FF" stroke="#6965DB" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M11 13h16M11 19h16M11 25h9" stroke="#6965DB" stroke-width="2.2" stroke-linecap="round"/>
+</svg>
+`;
+
+/** What {@link installScript} did to one file. */
+export type FileStatus = "created" | "updated" | "present" | "conflict";
+
+/** What {@link installScript} did overall. */
 export type InstallResult =
-	| { status: "created"; path: string }
-	| { status: "updated"; path: string }
-	| { status: "present"; path: string }
+	| {
+			status: "created" | "updated" | "present";
+			path: string;
+			/** What happened to the icon file. */
+			icon: FileStatus;
+	  }
 	| { status: "conflict"; path: string }
 	| { status: "error"; path: string; reason: string };
 
@@ -152,7 +187,36 @@ async function ensureFolder(vault: VaultLike, folder: string): Promise<void> {
 }
 
 /**
- * Writes the companion script into the vault's Excalidraw script folder.
+ * Writes one managed file, respecting existing content.
+ *
+ * @param vault - The vault.
+ * @param path - Vault-relative path.
+ * @param content - What the file should contain.
+ * @param marker - Ownership marker that licenses an overwrite.
+ * @returns What happened.
+ */
+async function ensureFile(
+	vault: VaultLike,
+	path: string,
+	content: string,
+	marker: string
+): Promise<FileStatus> {
+	const existing = vault.getAbstractFileByPath(path);
+	if (!existing) {
+		await vault.create(path, content);
+		return "created";
+	}
+
+	const current = await vault.read(existing);
+	if (current === content) return "present";
+	if (!current.includes(marker)) return "conflict";
+
+	await vault.modify(existing, content);
+	return "updated";
+}
+
+/**
+ * Writes the companion script and its icon into the vault's script folder.
  *
  * @param app - The Obsidian app.
  * @returns What happened, including the vault path involved.
@@ -165,25 +229,32 @@ export async function installScript(app: App): Promise<InstallResult> {
 
 	const folder = resolveScriptFolder(app);
 	const path = joinPath(folder, SCRIPT_FILE_NAME);
+	const iconPath = joinPath(folder, ICON_FILE_NAME);
 
 	try {
 		await ensureFolder(vault, folder);
 
-		const existing = vault.getAbstractFileByPath(path);
-		if (existing) {
-			const current = await vault.read(existing);
-			if (current === SCRIPT_CONTENT) return { status: "present", path };
-			if (!current.includes(MANAGED_MARKER)) {
-				return { status: "conflict", path };
-			}
-			// Ours but outdated: refresh it so the script keeps matching the
-			// plugin it calls.
-			await vault.modify(existing, SCRIPT_CONTENT);
-			return { status: "updated", path };
+		const status = await ensureFile(
+			vault,
+			path,
+			SCRIPT_CONTENT,
+			MANAGED_MARKER
+		);
+		if (status === "conflict") return { status, path };
+
+		// The icon is cosmetic: a conflict there must not fail the install, and a
+		// script without an icon still works, so it stays best-effort.
+		let icon: FileStatus = "conflict";
+		try {
+			icon = await ensureFile(vault, iconPath, SCRIPT_ICON_SVG, ICON_MARKER);
+		} catch (iconError) {
+			console.warn(
+				"[excalidraw-sticky-defaults] 写入脚本图标失败（不影响脚本运行）",
+				iconError
+			);
 		}
 
-		await vault.create(path, SCRIPT_CONTENT);
-		return { status: "created", path };
+		return { status, path, icon };
 	} catch (error) {
 		return {
 			status: "error",

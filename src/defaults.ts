@@ -49,6 +49,28 @@ export const VERTICAL_ALIGNMENTS: readonly VerticalAlign[] = [
 export type VAlignSetting = VerticalAlign | "keep";
 
 /**
+ * Which sticky notes one run touches.
+ *
+ * `"auto"` exists because a one-click button has to guess something: if the user
+ * has sticky notes selected, handling only those is almost always what they
+ * mean; with nothing selected, handling the whole drawing is the original
+ * behaviour. The guess is reported in the notice, so it is never silent.
+ */
+export type ApplyScope = "all" | "auto" | "selected";
+
+/** Every scope, in menu order. */
+export const APPLY_SCOPES: readonly ApplyScope[] = ["auto", "all", "selected"];
+
+/**
+ * Reports whether a value is a usable scope setting.
+ *
+ * @param value - Candidate value.
+ */
+export function isScopeSetting(value: unknown): value is ApplyScope {
+	return APPLY_SCOPES.includes(value as ApplyScope);
+}
+
+/**
  * Font sizes Excalidraw itself offers (S / M / L / XL), plus this plugin's `0`
  * = "leave it alone".
  *

@@ -37,6 +37,10 @@ var VERTICAL_ALIGNMENTS = [
   "middle",
   "bottom"
 ];
+var APPLY_SCOPES = ["auto", "all", "selected"];
+function isScopeSetting(value) {
+  return APPLY_SCOPES.includes(value);
+}
 var FONT_SIZES = [16, 20, 28, 36];
 var FONT_OPTIONS = [
   { value: 1, label: "Virgil（手写）" },
@@ -109,6 +113,22 @@ function editingIds(state) {
   const element = editing;
   return { id: element.id, containerId: element.containerId };
 }
+function selectedNoteIds(elements, state) {
+  const selected = /* @__PURE__ */ new Set();
+  const raw = state == null ? void 0 : state.selectedElementIds;
+  if (!raw || typeof raw !== "object") return selected;
+  for (const [id, on] of Object.entries(raw)) {
+    if (!on) continue;
+    const element = elements.find((el) => el.id === id);
+    if (!element) continue;
+    if (isStickyNote(element)) {
+      selected.add(id);
+    } else if (element.type === "text" && typeof element.containerId === "string") {
+      selected.add(element.containerId);
+    }
+  }
+  return selected;
+}
 function isEditing(view, label) {
   var _a, _b, _c, _d;
   try {
@@ -169,26 +189,47 @@ async function writePatches(app, view, elements, patches) {
     (_a = ea.destroy) == null ? void 0 : _a.call(ea);
   }
 }
-async function applyStickyDefaults(app, defaults, debug = false) {
-  var _a, _b;
+async function applyStickyDefaults(app, defaults, options = {}) {
+  var _a, _b, _c;
+  const scope = (_a = options.scope) != null ? _a : "auto";
   const outcome = {
     notes: 0,
     changed: 0,
     editing: 0,
     noLabel: 0,
     failed: 0,
-    noAutomate: false
+    noAutomate: false,
+    views: 0,
+    limitedViews: 0,
+    noSelection: false
   };
   if (isNoop(defaults)) return outcome;
   for (const leaf of app.workspace.getLeavesOfType("excalidraw")) {
     const view = leaf.view;
-    const elements = (_b = (_a = view == null ? void 0 : view.excalidrawAPI) == null ? void 0 : _a.getSceneElements) == null ? void 0 : _b.call(_a);
+    const api = view == null ? void 0 : view.excalidrawAPI;
+    const elements = (_b = api == null ? void 0 : api.getSceneElements) == null ? void 0 : _b.call(api);
     if (!view || !Array.isArray(elements)) continue;
+    outcome.views += 1;
+    const scene = elements;
+    let state;
+    try {
+      state = (_c = api == null ? void 0 : api.getAppState) == null ? void 0 : _c.call(api);
+    } catch (e) {
+      state = void 0;
+    }
+    const selection = selectedNoteIds(scene, state);
+    const limitToSelection = scope === "selected" || scope === "auto" && selection.size > 0;
+    if (limitToSelection) outcome.limitedViews += 1;
+    if (scope === "selected" && selection.size === 0) {
+      outcome.noSelection = true;
+      continue;
+    }
     const patches = [];
-    for (const element of elements) {
-      if (!isStickyNote(element)) continue;
+    for (const element of scene) {
+      if (!isStickyNote(element) || typeof element.id !== "string") continue;
+      if (limitToSelection && !selection.has(element.id)) continue;
       outcome.notes += 1;
-      const label = boundLabelOf(element, elements);
+      const label = boundLabelOf(element, scene);
       if (!label || typeof label.id !== "string") {
         outcome.noLabel += 1;
         continue;
@@ -201,10 +242,10 @@ async function applyStickyDefaults(app, defaults, debug = false) {
       if (patch) patches.push({ labelId: label.id, patch });
     }
     if (patches.length === 0) continue;
-    const ok = await writePatches(app, view, elements, patches);
+    const ok = await writePatches(app, view, scene, patches);
     if (ok) {
       outcome.changed += patches.length;
-      if (debug) {
+      if (options.debug) {
         for (const entry of patches) {
           console.log(
             "[excalidraw-sticky-defaults] 已改写便签",
@@ -223,12 +264,14 @@ async function applyStickyDefaults(app, defaults, debug = false) {
 
 // src/script-installer.ts
 var SCRIPT_FILE_NAME = "套用便签默认设置.md";
+var ICON_FILE_NAME = "套用便签默认设置.svg";
 var MANAGED_MARKER = "managed-by: excalidraw-sticky-defaults";
+var ICON_MARKER = `<!-- ${MANAGED_MARKER} -->`;
 var DEFAULT_SCRIPT_FOLDER = "Excalidraw/Scripts";
 var SCRIPT_CONTENT = `/*
 # 套用便签默认设置
 
-把 Excalidraw 便签的**字体 / 字号上限 / 水平对齐 / 垂直对齐**一键改成你在设置里定的值。
+把 Excalidraw 便签的**字体 / 字号上限 / 水平对齐 / 垂直对齐**一键改成你在设置里定的值（可以只改选中的便签）。
 
 本脚本**不含改写逻辑**，只是把 **Excalidraw Sticky Note Defaults** 插件的「立即套用」搬进脚本库，方便在画布里直接点。设置项、改写逻辑、结果提示都在那个插件里 —— 这样只有一份真相，不会两边不一致。
 
@@ -242,7 +285,9 @@ Excalidraw 会把便签文字**强制居中**，改它的默认对齐没用；�
 2. 或命令面板搜「套用便签默认设置」
 3. 或在插件设置页点「立即套用」
 
-三者效果完全相同。点完右上角会提示改写了几个便签。
+三者效果完全相同。点完右上角会提示改写了几个便签、用的是哪种范围。
+
+**只改选中的便签**：先在画布上选中它们再点。默认「自动」—— 选中了便签就只改选中的，没选中就改全部。
 
 ## 依赖
 
@@ -266,6 +311,13 @@ if (!plugin || typeof plugin.applyNow !== "function") {
 
 await plugin.applyNow();
 `;
+var SCRIPT_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none">
+${ICON_MARKER}
+<path d="M9 5h22a4 4 0 0 1 4 4v15l-9 9H9a4 4 0 0 1-4-4V9a4 4 0 0 1 4-4Z" fill="#F3F1FF" stroke="#6965DB" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M26 33v-6a3 3 0 0 1 3-3h6" fill="#DDD8FF" stroke="#6965DB" stroke-width="2.2" stroke-linejoin="round"/>
+<path d="M11 13h16M11 19h16M11 25h9" stroke="#6965DB" stroke-width="2.2" stroke-linecap="round"/>
+</svg>
+`;
 function resolveScriptFolder(app) {
   var _a, _b;
   const registry = app.plugins;
@@ -288,6 +340,18 @@ async function ensureFolder(vault, folder) {
     if (!((_b = vault.getFolderByPath) == null ? void 0 : _b.call(vault, folder))) throw new Error(`无法创建目录：${folder}`);
   }
 }
+async function ensureFile(vault, path, content, marker) {
+  const existing = vault.getAbstractFileByPath(path);
+  if (!existing) {
+    await vault.create(path, content);
+    return "created";
+  }
+  const current = await vault.read(existing);
+  if (current === content) return "present";
+  if (!current.includes(marker)) return "conflict";
+  await vault.modify(existing, content);
+  return "updated";
+}
 async function installScript(app) {
   const vault = app.vault;
   if (!vault || typeof vault.create !== "function") {
@@ -295,20 +359,26 @@ async function installScript(app) {
   }
   const folder = resolveScriptFolder(app);
   const path = joinPath(folder, SCRIPT_FILE_NAME);
+  const iconPath = joinPath(folder, ICON_FILE_NAME);
   try {
     await ensureFolder(vault, folder);
-    const existing = vault.getAbstractFileByPath(path);
-    if (existing) {
-      const current = await vault.read(existing);
-      if (current === SCRIPT_CONTENT) return { status: "present", path };
-      if (!current.includes(MANAGED_MARKER)) {
-        return { status: "conflict", path };
-      }
-      await vault.modify(existing, SCRIPT_CONTENT);
-      return { status: "updated", path };
+    const status = await ensureFile(
+      vault,
+      path,
+      SCRIPT_CONTENT,
+      MANAGED_MARKER
+    );
+    if (status === "conflict") return { status, path };
+    let icon = "conflict";
+    try {
+      icon = await ensureFile(vault, iconPath, SCRIPT_ICON_SVG, ICON_MARKER);
+    } catch (iconError) {
+      console.warn(
+        "[excalidraw-sticky-defaults] 写入脚本图标失败（不影响脚本运行）",
+        iconError
+      );
     }
-    await vault.create(path, SCRIPT_CONTENT);
-    return { status: "created", path };
+    return { status, path, icon };
   } catch (error) {
     return {
       status: "error",
@@ -326,6 +396,7 @@ var DEFAULT_SETTINGS = {
   fontSize: 0,
   textAlign: "left",
   verticalAlign: "top",
+  scope: "auto",
   debugLog: false
 };
 function normalizeSettings(stored) {
@@ -338,6 +409,7 @@ function normalizeSettings(stored) {
     fontSize,
     textAlign: isAlignSetting(raw.textAlign) ? raw.textAlign : DEFAULT_SETTINGS.textAlign,
     verticalAlign: isVerticalAlignSetting(raw.verticalAlign) ? raw.verticalAlign : DEFAULT_SETTINGS.verticalAlign,
+    scope: isScopeSetting(raw.scope) ? raw.scope : DEFAULT_SETTINGS.scope,
     debugLog: typeof raw.debugLog === "boolean" ? raw.debugLog : DEFAULT_SETTINGS.debugLog
   };
 }
@@ -360,6 +432,11 @@ var VALIGN_LABELS = {
   middle: "垂直居中",
   bottom: "底部",
   keep: "不修改"
+};
+var SCOPE_LABELS = {
+  auto: "自动：选中了便签就只改选中的，否则改全部",
+  all: "全部便签",
+  selected: "仅选中的便签（没选中就不动作）"
 };
 var SIZE_LABELS = {
   16: "16（S）",
@@ -434,6 +511,17 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
+    new import_obsidian.Setting(containerEl).setName("作用范围").setDesc(
+      "默认「自动」：在画布上选中了便签，就只改选中的那些；没选中任何便签，就改整张图纸。想强制只看选中，选「仅选中的」。选中便签的**文字**而不是外框，也算选中了它。实际用了哪种范围，点击后的提示里会写明。"
+    ).addDropdown((dropdown) => {
+      for (const value of APPLY_SCOPES) {
+        dropdown.addOption(value, SCOPE_LABELS[value]);
+      }
+      dropdown.setValue(this.plugin.settings.scope).onChange(async (value) => {
+        this.plugin.settings.scope = isScopeSetting(value) ? value : "auto";
+        await this.plugin.saveSettings();
+      });
+    });
     new import_obsidian.Setting(containerEl).setName("套用到已打开的图纸").setDesc(
       "**这是唯一的触发方式**（不再自动监听）。点一次就把上面各项套用到所有已打开 Excalidraw 图纸里的便签，并在右上角提示改了几个。左侧丝带栏的便签图标、命令面板的「套用便签默认设置」效果相同。正在编辑的便签会跳过 —— 点一下画布空白处再点一次即可。"
     ).addButton(
@@ -462,19 +550,26 @@ var StickyDefaultsSettingTab = class extends import_obsidian.PluginSettingTab {
 // src/main.ts
 var RIBBON_ICON = "sticky-note";
 var NOTICE_MS = 8e3;
+function scopeLabel(outcome) {
+  if (outcome.limitedViews === 0) return "全部";
+  if (outcome.limitedViews >= outcome.views) return "仅选中";
+  return "部分图纸仅选中";
+}
 function describeOutcome(outcome) {
   if (outcome.noAutomate) {
     return "取不到 ExcalidrawAutomate：请确认 Excalidraw 插件已启用并与 Obsidian 版本匹配。";
+  }
+  if (outcome.noSelection) {
+    return "选中的元素里没有便签：先选中便签再点，或把「作用范围」改成「全部」。";
   }
   if (outcome.notes === 0) {
     return "没有找到便签：请先打开一张含便签的 Excalidraw 图纸，再点这个按钮。";
   }
   const parts = [];
-  if (outcome.changed > 0) {
-    parts.push(`已改写 ${outcome.changed} 个便签`);
-  } else {
-    parts.push("没有需要改写的便签（已经是目标样式）");
-  }
+  parts.push(
+    outcome.changed > 0 ? `已改写 ${outcome.changed} 个便签` : "没有需要改写的便签（已经是目标样式）"
+  );
+  parts.push(`范围：${scopeLabel(outcome)}`);
   if (outcome.editing > 0) {
     parts.push(`跳过 ${outcome.editing} 个正在编辑的（点一下画布空白处再点一次）`);
   }
@@ -484,16 +579,28 @@ function describeOutcome(outcome) {
   if (outcome.failed > 0) {
     parts.push(`${outcome.failed} 张图纸写入失败（详见控制台）`);
   }
-  return `${parts.join("；")}（共发现 ${outcome.notes} 个便签）`;
+  return `${parts.join(" · ")}（共发现 ${outcome.notes} 个便签）`;
+}
+function iconNote(icon) {
+  switch (icon) {
+    case "created":
+      return "（同时写入了图标）";
+    case "updated":
+      return "（图标已更新）";
+    case "present":
+      return "";
+    default:
+      return "（同名图标不是你生成的，未覆盖）";
+  }
 }
 function describeInstall(result) {
   switch (result.status) {
     case "created":
-      return `已安装脚本：${result.path}（在 Excalidraw 脚本库里即可看到）`;
+      return `已安装脚本${iconNote(result.icon)}：${result.path}（在 Excalidraw 脚本库里即可看到）`;
     case "updated":
-      return `已更新脚本：${result.path}`;
+      return `已更新脚本${iconNote(result.icon)}：${result.path}`;
     case "present":
-      return `脚本已是最新，无需重复安装：${result.path}`;
+      return `脚本已是最新，无需重复安装${iconNote(result.icon)}：${result.path}`;
     case "conflict":
       return `已存在同名脚本但内容不同，未覆盖：${result.path}。如需用插件版，请先改名或删除它。`;
     default:
@@ -553,11 +660,10 @@ var StickyDefaultsPlugin = class extends import_obsidian2.Plugin {
       );
       return;
     }
-    const outcome = await applyStickyDefaults(
-      this.app,
-      defaults,
-      this.settings.debugLog
-    );
+    const outcome = await applyStickyDefaults(this.app, defaults, {
+      scope: this.settings.scope,
+      debug: this.settings.debugLog
+    });
     new import_obsidian2.Notice(describeOutcome(outcome), NOTICE_MS);
   }
   /** Loads persisted settings, falling back to defaults. */

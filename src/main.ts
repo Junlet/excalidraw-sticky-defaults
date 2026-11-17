@@ -46,11 +46,26 @@ const RIBBON_ICON = "sticky-note";
 const NOTICE_MS = 8000;
 
 /**
+ * Which scope a run actually used, in words.
+ *
+ * With several drawings open the scope can differ per view (`"auto"` narrows
+ * only where something is selected), so the mixed case is reported as such
+ * rather than picking one and being subtly wrong.
+ *
+ * @param outcome - What the run did.
+ */
+function scopeLabel(outcome: ApplyOutcome): string {
+	if (outcome.limitedViews === 0) return "全部";
+	if (outcome.limitedViews >= outcome.views) return "仅选中";
+	return "部分图纸仅选中";
+}
+
+/**
  * Turns the outcome into one sentence the user can act on.
  *
- * Every branch says something concrete: "nothing found" and "everything already
- * matched" must not look the same as "it silently did nothing", which is exactly
- * how the earlier polling version felt.
+ * Every branch says something concrete: "nothing found", "everything already
+ * matched" and "the scope excluded everything" must not look the same as "it
+ * silently did nothing", which is exactly how the earlier polling version felt.
  *
  * @param outcome - What the run did.
  */
@@ -58,16 +73,20 @@ export function describeOutcome(outcome: ApplyOutcome): string {
 	if (outcome.noAutomate) {
 		return "取不到 ExcalidrawAutomate：请确认 Excalidraw 插件已启用并与 Obsidian 版本匹配。";
 	}
+	if (outcome.noSelection) {
+		return "选中的元素里没有便签：先选中便签再点，或把「作用范围」改成「全部」。";
+	}
 	if (outcome.notes === 0) {
 		return "没有找到便签：请先打开一张含便签的 Excalidraw 图纸，再点这个按钮。";
 	}
 
 	const parts: string[] = [];
-	if (outcome.changed > 0) {
-		parts.push(`已改写 ${outcome.changed} 个便签`);
-	} else {
-		parts.push("没有需要改写的便签（已经是目标样式）");
-	}
+	parts.push(
+		outcome.changed > 0
+			? `已改写 ${outcome.changed} 个便签`
+			: "没有需要改写的便签（已经是目标样式）"
+	);
+	parts.push(`范围：${scopeLabel(outcome)}`);
 	if (outcome.editing > 0) {
 		parts.push(`跳过 ${outcome.editing} 个正在编辑的（点一下画布空白处再点一次）`);
 	}
@@ -77,7 +96,21 @@ export function describeOutcome(outcome: ApplyOutcome): string {
 	if (outcome.failed > 0) {
 		parts.push(`${outcome.failed} 张图纸写入失败（详见控制台）`);
 	}
-	return `${parts.join("；")}（共发现 ${outcome.notes} 个便签）`;
+	return `${parts.join(" · ")}（共发现 ${outcome.notes} 个便签）`;
+}
+
+/** How the icon part of an install went, in words. */
+function iconNote(icon: "created" | "updated" | "present" | "conflict"): string {
+	switch (icon) {
+		case "created":
+			return "（同时写入了图标）";
+		case "updated":
+			return "（图标已更新）";
+		case "present":
+			return "";
+		default:
+			return "（同名图标不是你生成的，未覆盖）";
+	}
 }
 
 /**
@@ -92,11 +125,11 @@ export function describeOutcome(outcome: ApplyOutcome): string {
 export function describeInstall(result: InstallResult): string {
 	switch (result.status) {
 		case "created":
-			return `已安装脚本：${result.path}（在 Excalidraw 脚本库里即可看到）`;
+			return `已安装脚本${iconNote(result.icon)}：${result.path}（在 Excalidraw 脚本库里即可看到）`;
 		case "updated":
-			return `已更新脚本：${result.path}`;
+			return `已更新脚本${iconNote(result.icon)}：${result.path}`;
 		case "present":
-			return `脚本已是最新，无需重复安装：${result.path}`;
+			return `脚本已是最新，无需重复安装${iconNote(result.icon)}：${result.path}`;
 		case "conflict":
 			return `已存在同名脚本但内容不同，未覆盖：${result.path}。如需用插件版，请先改名或删除它。`;
 		default:
@@ -163,11 +196,10 @@ export default class StickyDefaultsPlugin extends Plugin {
 			return;
 		}
 
-		const outcome = await applyStickyDefaults(
-			this.app,
-			defaults,
-			this.settings.debugLog
-		);
+		const outcome = await applyStickyDefaults(this.app, defaults, {
+			scope: this.settings.scope,
+			debug: this.settings.debugLog,
+		});
 		new Notice(describeOutcome(outcome), NOTICE_MS);
 	}
 

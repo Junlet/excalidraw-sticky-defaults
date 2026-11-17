@@ -11,6 +11,7 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type StickyDefaultsPlugin from "./main";
 import {
+	APPLY_SCOPES,
 	FONT_OPTIONS,
 	FONT_SIZES,
 	TEXT_ALIGNMENTS,
@@ -18,8 +19,10 @@ import {
 	isAlignSetting,
 	isFontId,
 	isFontSizeSetting,
+	isScopeSetting,
 	isVerticalAlignSetting,
 	type AlignSetting,
+	type ApplyScope,
 	type StickyDefaults,
 	type VAlignSetting,
 } from "./defaults";
@@ -36,6 +39,8 @@ export interface StickyDefaultsSettings {
 	textAlign: AlignSetting;
 	/** Vertical alignment to force, or `"keep"`. */
 	verticalAlign: VAlignSetting;
+	/** Which notes a run touches. */
+	scope: ApplyScope;
 	/** Log every rewrite to the console. Off unless asked for. */
 	debugLog: boolean;
 }
@@ -52,6 +57,7 @@ export const DEFAULT_SETTINGS: StickyDefaultsSettings = {
 	fontSize: 0,
 	textAlign: "left",
 	verticalAlign: "top",
+	scope: "auto",
 	debugLog: false,
 };
 
@@ -91,6 +97,7 @@ export function normalizeSettings(stored: unknown): StickyDefaultsSettings {
 		verticalAlign: isVerticalAlignSetting(raw.verticalAlign)
 			? raw.verticalAlign
 			: DEFAULT_SETTINGS.verticalAlign,
+		scope: isScopeSetting(raw.scope) ? raw.scope : DEFAULT_SETTINGS.scope,
 		debugLog:
 			typeof raw.debugLog === "boolean"
 				? raw.debugLog
@@ -130,6 +137,13 @@ const VALIGN_LABELS: Record<VAlignSetting, string> = {
 	middle: "垂直居中",
 	bottom: "底部",
 	keep: "不修改",
+};
+
+/** Labels for the scope dropdown. */
+const SCOPE_LABELS: Record<ApplyScope, string> = {
+	auto: "自动：选中了便签就只改选中的，否则改全部",
+	all: "全部便签",
+	selected: "仅选中的便签（没选中就不动作）",
 };
 
 /** Labels for the font-size dropdown, matching Excalidraw's own presets. */
@@ -255,6 +269,28 @@ export class StickyDefaultsSettingTab extends PluginSettingTab {
 						)
 							? value
 							: "keep";
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("作用范围")
+			.setDesc(
+				"默认「自动」：在画布上选中了便签，就只改选中的那些；没选中任何便签，" +
+					"就改整张图纸。想强制只看选中，选「仅选中的」。" +
+					"选中便签的**文字**而不是外框，也算选中了它。" +
+					"实际用了哪种范围，点击后的提示里会写明。"
+			)
+			.addDropdown((dropdown) => {
+				for (const value of APPLY_SCOPES) {
+					dropdown.addOption(value, SCOPE_LABELS[value]);
+				}
+				dropdown
+					.setValue(this.plugin.settings.scope)
+					.onChange(async (value) => {
+						this.plugin.settings.scope = isScopeSetting(value)
+							? value
+							: "auto";
 						await this.plugin.saveSettings();
 					});
 			});

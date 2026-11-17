@@ -11,12 +11,15 @@
  * failed sometimes, silently.
  *
  * So detection is gone. The user picks the moment: a ribbon button, a command,
- * or the button in the settings pane rewrites every sticky note in every open
- * drawing and then *reports what happened* through a notice. Nothing runs in the
- * background, nothing is silent.
+ * the settings pane or the script-library button rewrites the labels and then
+ * *reports what happened* through a notice. Nothing runs in the background.
  *
- * A note whose text editor is open at that moment is skipped and counted, so the
- * notice can say why it was not changed instead of looking broken.
+ * SCOPE
+ * -----
+ * A run can be limited to the current selection. See {@link ApplyScope} for why
+ * `"auto"` is the shipped default, and note that whatever a run decided is
+ * stated in the notice -- a scope that quietly guessed wrong would be
+ * indistinguishable from a broken button.
  */
 
 import type { App } from "obsidian";
@@ -26,6 +29,7 @@ import {
 	isNoop,
 	isStickyNote,
 	labelPatch,
+	type ApplyScope,
 	type ElementLike,
 	type LabelPatch,
 	type StickyDefaults,
@@ -33,7 +37,7 @@ import {
 
 /** What one run of {@link applyStickyDefaults} did. */
 export interface ApplyOutcome {
-	/** Sticky notes found across every open drawing. */
+	/** Sticky notes the run considered (after applying the scope). */
 	notes: number;
 	/** Labels actually rewritten. */
 	changed: number;
@@ -45,13 +49,27 @@ export interface ApplyOutcome {
 	failed: number;
 	/** True when ExcalidrawAutomate could not be reached at all. */
 	noAutomate: boolean;
+	/** Drawings the run looked at. */
+	views: number;
+	/** Drawings whose run was limited to the selection. */
+	limitedViews: number;
+	/** True when the scope asked for a selection but none held a sticky note. */
+	noSelection: boolean;
+}
+
+/** Knobs for one run. */
+export interface ApplyOptions {
+	/** Which notes to touch. Defaults to `"auto"`. */
+	scope?: ApplyScope;
+	/** Log each rewritten label to the console. */
+	debug?: boolean;
 }
 
 /** The parts of the Excalidraw view this module reads. */
 interface ExcalidrawViewLike {
 	excalidrawAPI?: {
 		getSceneElements?: () => unknown;
-		getAppState?: () => { editingTextElement?: unknown } | undefined;
+		getAppState?: () => unknown;
 	} | null;
 	containerEl?: { querySelector?: (selector: string) => unknown };
 }
@@ -77,6 +95,38 @@ function editingIds(state: unknown): { id?: unknown; containerId?: unknown } {
 	if (!editing || typeof editing !== "object") return {};
 	const element = editing as { id?: unknown; containerId?: unknown };
 	return { id: element.id, containerId: element.containerId };
+}
+
+/**
+ * Ids of the sticky notes the user has selected.
+ *
+ * Selecting a note's text label instead of the note itself is counted as
+ * selecting the note: the label is what this plugin rewrites, and clicking the
+ * words rather than the coloured box is easy to do by accident.
+ *
+ * @param elements - The scene.
+ * @param state - `getAppState()` result, read for `selectedElementIds`.
+ */
+export function selectedNoteIds(
+	elements: readonly ElementLike[],
+	state: unknown
+): Set<string> {
+	const selected = new Set<string>();
+	const raw = (state as { selectedElementIds?: unknown } | undefined)
+		?.selectedElementIds;
+	if (!raw || typeof raw !== "object") return selected;
+
+	for (const [id, on] of Object.entries(raw as Record<string, unknown>)) {
+		if (!on) continue;
+		const element = elements.find((el) => el.id === id);
+		if (!element) continue;
+		if (isStickyNote(element)) {
+			selected.add(id);
+		} else if (element.type === "text" && typeof element.containerId === "string") {
+			selected.add(element.containerId);
+		}
+	}
+	return selected;
 }
 
 /**
@@ -189,21 +239,22 @@ async function writePatches(
 }
 
 /**
- * Rewrites every sticky note in every open Excalidraw drawing.
+ * Rewrites sticky-note labels in every open Excalidraw drawing.
  *
  * Idempotent: labels that already match produce no patch and no write, so a
  * second click is harmless.
  *
  * @param app - The Obsidian app.
  * @param defaults - What to force; `null` fields are left alone.
- * @param debug - Log each rewritten label.
+ * @param options - Scope and logging.
  * @returns What happened, for the caller to report.
  */
 export async function applyStickyDefaults(
 	app: App,
 	defaults: StickyDefaults,
-	debug = false
+	options: ApplyOptions = {}
 ): Promise<ApplyOutcome> {
+	const scope = options.scope ?? "auto";
 	const outcome: ApplyOutcome = {
 		notes: 0,
 		changed: 0,
@@ -211,20 +262,45 @@ export async function applyStickyDefaults(
 		noLabel: 0,
 		failed: 0,
 		noAutomate: false,
+		views: 0,
+		limitedViews: 0,
+		noSelection: false,
 	};
 	if (isNoop(defaults)) return outcome;
 
 	for (const leaf of app.workspace.getLeavesOfType("excalidraw")) {
 		const view = leaf.view as unknown as ExcalidrawViewLike | undefined;
-		const elements = view?.excalidrawAPI?.getSceneElements?.();
+		const api = view?.excalidrawAPI;
+		const elements = api?.getSceneElements?.();
 		if (!view || !Array.isArray(elements)) continue;
+		outcome.views += 1;
+
+		const scene = elements as ElementLike[];
+		let state: unknown;
+		try {
+			state = api?.getAppState?.();
+		} catch {
+			state = undefined;
+		}
+		const selection = selectedNoteIds(scene, state);
+
+		// "selected" obeys the user literally; "auto" only narrows when the
+		// selection actually holds a note.
+		const limitToSelection =
+			scope === "selected" || (scope === "auto" && selection.size > 0);
+		if (limitToSelection) outcome.limitedViews += 1;
+		if (scope === "selected" && selection.size === 0) {
+			outcome.noSelection = true;
+			continue;
+		}
 
 		const patches: Array<{ labelId: string; patch: LabelPatch }> = [];
-		for (const element of elements as ElementLike[]) {
-			if (!isStickyNote(element)) continue;
+		for (const element of scene) {
+			if (!isStickyNote(element) || typeof element.id !== "string") continue;
+			if (limitToSelection && !selection.has(element.id)) continue;
 			outcome.notes += 1;
 
-			const label = boundLabelOf(element, elements as ElementLike[]);
+			const label = boundLabelOf(element, scene);
 			if (!label || typeof label.id !== "string") {
 				outcome.noLabel += 1;
 				continue;
@@ -238,10 +314,10 @@ export async function applyStickyDefaults(
 		}
 
 		if (patches.length === 0) continue;
-		const ok = await writePatches(app, view, elements as ElementLike[], patches);
+		const ok = await writePatches(app, view, scene, patches);
 		if (ok) {
 			outcome.changed += patches.length;
-			if (debug) {
+			if (options.debug) {
 				for (const entry of patches) {
 					console.log(
 						"[excalidraw-sticky-defaults] 已改写便签",
